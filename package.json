@@ -32,7 +32,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/maxenlin/mcp-zentao-11-3.git"
+    "url": "https://github.com/MaxenLin/mcp-zentao-11-3.git"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.6.1",

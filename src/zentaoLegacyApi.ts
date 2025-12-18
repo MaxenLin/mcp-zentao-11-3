@@ -516,13 +516,24 @@ export class ZentaoLegacyAPI {
     /**
      * 搜索需求（通过关键字）
      * 由于禅道11.3的搜索API权限限制，我们通过获取所有产品的需求然后本地过滤
+     * 
+     * 搜索范围：
+     * - 如果指定 productId：搜索该产品的所有需求（全量）
+     * - 如果未指定 productId：搜索所有产品的所有需求（全量）
+     * 
+     * 优化：
+     * 1. 支持分词搜索（将关键字拆分为多个词进行匹配）
+     * 2. 增强匹配逻辑（标题、描述、模块名、产品名）
+     * 3. 智能排序（匹配度评分：标题完全匹配 > 标题包含 > 描述匹配 > 其他字段匹配）
+     * 4. 如果列表接口的spec不完整，对标题匹配的需求进行深度搜索（获取详情）
      */
     async searchStories(keyword: string, options?: {
         productId?: number;
         status?: StoryStatus;
         limit?: number;
+        deepSearch?: boolean; // 是否深度搜索（获取详情以获取完整描述）
     }): Promise<Story[]> {
-        const { productId, status, limit = 50 } = options || {};
+        const { productId, status, limit = 50, deepSearch = false } = options || {};
 
         try {
             let allStories: Story[] = [];
@@ -531,51 +542,151 @@ export class ZentaoLegacyAPI {
                 // 搜索指定产品的需求
                 allStories = await this.getProductStories(productId, status);
             } else {
-                // 搜索所有产品的需求
+                // 搜索所有产品的需求（全量搜索）
                 const products = await this.getProducts();
 
-                // 限制搜索范围，避免请求过多
-                const searchProducts = products.slice(0, 20); // 只搜索前20个产品
-
-                for (const product of searchProducts) {
+                // 全量搜索：遍历所有产品
+                for (const product of products) {
                     try {
                         const stories = await this.getProductStories(product.id, status);
                         allStories.push(...stories);
                     } catch (error) {
+                        // 某个产品获取失败，继续处理其他产品
+                        console.warn(`获取产品 ${product.id} (${product.name}) 的需求失败:`, error);
                         continue;
                     }
                 }
             }
 
-            // 本地过滤：按关键字搜索
+            // 分词：将关键字拆分为多个词（支持中英文）
+            const keywords = this.splitKeywords(keyword);
             const keyword_lower = keyword.toLowerCase();
-            const matchedStories = allStories.filter(story => {
-                // 在标题、描述中搜索关键字
-                const titleMatch = story.title.toLowerCase().includes(keyword_lower);
-                const specMatch = story.spec && story.spec.toLowerCase().includes(keyword_lower);
 
-                return titleMatch || specMatch;
-            });
+            // 计算匹配度评分
+            const scoredStories = allStories.map(story => {
+                const score = this.calculateMatchScore(story, keyword_lower, keywords);
+                return { story, score };
+            }).filter(item => item.score > 0); // 只保留有匹配的
 
-            // 按相关性排序（标题匹配优先）
-            matchedStories.sort((a, b) => {
-                const aTitle = a.title.toLowerCase().includes(keyword_lower);
-                const bTitle = b.title.toLowerCase().includes(keyword_lower);
+            // 如果启用深度搜索，对标题匹配但描述可能不完整的需求获取详情
+            if (deepSearch) {
+                const titleMatchedButLowScore = scoredStories
+                    .filter(item => {
+                        const titleMatch = item.story.title.toLowerCase().includes(keyword_lower);
+                        const specMatch = item.story.spec && item.story.spec.toLowerCase().includes(keyword_lower);
+                        return titleMatch && !specMatch && item.score < 50; // 标题匹配但描述不匹配，且评分较低
+                    })
+                    .slice(0, 10); // 最多深度搜索10个
 
-                if (aTitle && !bTitle) return -1;
-                if (!aTitle && bTitle) return 1;
+                for (const item of titleMatchedButLowScore) {
+                    try {
+                        const detail = await this.getStoryDetail(item.story.id);
+                        // 使用完整描述重新计算评分
+                        const newScore = this.calculateMatchScore(detail, keyword_lower, keywords);
+                        if (newScore > item.score) {
+                            item.story = detail;
+                            item.score = newScore;
+                        }
+                    } catch (error) {
+                        // 忽略获取详情失败的情况
+                        continue;
+                    }
+                }
+            }
 
-                // 都匹配标题或都不匹配标题，按ID倒序（新的在前）
-                return b.id - a.id;
+            // 按评分降序排序
+            scoredStories.sort((a, b) => {
+                if (b.score !== a.score) {
+                    return b.score - a.score;
+                }
+                // 评分相同，按ID倒序（新的在前）
+                return b.story.id - a.story.id;
             });
 
             // 限制返回数量
-            return matchedStories.slice(0, limit);
+            return scoredStories.slice(0, limit).map(item => item.story);
 
         } catch (error) {
             console.error('搜索需求失败:', error);
             throw new Error(`搜索需求失败: ${error instanceof Error ? error.message : String(error)}`);
         }
+    }
+
+    /**
+     * 分词：将关键字拆分为多个词
+     * 支持中英文混合，中文按字符拆分，英文按单词拆分
+     */
+    private splitKeywords(keyword: string): string[] {
+        const keywords: string[] = [];
+        const lowerKeyword = keyword.toLowerCase();
+
+        // 英文单词（字母、数字、连字符）
+        const englishWords = lowerKeyword.match(/[a-z0-9]+(?:-[a-z0-9]+)*/g) || [];
+        keywords.push(...englishWords);
+
+        // 中文字符（每个字符作为一个词）
+        const chineseChars = lowerKeyword.match(/[\u4e00-\u9fa5]/g) || [];
+        keywords.push(...chineseChars);
+
+        // 如果分词后没有结果，返回原始关键字
+        if (keywords.length === 0) {
+            keywords.push(lowerKeyword);
+        }
+
+        return keywords;
+    }
+
+    /**
+     * 计算匹配度评分
+     * 评分规则：
+     * - 标题完全匹配：100分
+     * - 标题包含关键字：80分
+     * - 标题包含部分关键字（分词匹配）：60分
+     * - 描述包含关键字：40分
+     * - 描述包含部分关键字：20分
+     * - 模块名/产品名匹配：10分
+     */
+    private calculateMatchScore(story: Story, keyword: string, keywords: string[]): number {
+        let score = 0;
+        const title_lower = story.title.toLowerCase();
+        const spec_lower = (story.spec || '').toLowerCase();
+        const moduleName_lower = (story.moduleName || '').toLowerCase();
+        const productName_lower = (story.productName || '').toLowerCase();
+
+        // 标题完全匹配（最高优先级）
+        if (title_lower === keyword) {
+            score += 100;
+        }
+        // 标题包含完整关键字
+        else if (title_lower.includes(keyword)) {
+            score += 80;
+        }
+        // 标题包含部分关键字（分词匹配）
+        else {
+            const titleKeywordMatches = keywords.filter(k => title_lower.includes(k)).length;
+            if (titleKeywordMatches > 0) {
+                score += 60 * (titleKeywordMatches / keywords.length); // 按匹配比例计算
+            }
+        }
+
+        // 描述包含完整关键字
+        if (spec_lower.includes(keyword)) {
+            score += 40;
+        }
+        // 描述包含部分关键字
+        else if (spec_lower) {
+            const specKeywordMatches = keywords.filter(k => spec_lower.includes(k)).length;
+            if (specKeywordMatches > 0) {
+                score += 20 * (specKeywordMatches / keywords.length);
+            }
+        }
+
+        // 模块名/产品名匹配（加分项）
+        if (moduleName_lower.includes(keyword) || productName_lower.includes(keyword)) {
+            score += 10;
+        }
+
+        return score;
     }
 
     /**

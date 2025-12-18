@@ -90,12 +90,39 @@ export declare class ZentaoLegacyAPI {
     /**
      * 搜索需求（通过关键字）
      * 由于禅道11.3的搜索API权限限制，我们通过获取所有产品的需求然后本地过滤
+     *
+     * 搜索范围：
+     * - 如果指定 productId：搜索该产品的所有需求（全量）
+     * - 如果未指定 productId：搜索所有产品的所有需求（全量）
+     *
+     * 优化：
+     * 1. 支持分词搜索（将关键字拆分为多个词进行匹配）
+     * 2. 增强匹配逻辑（标题、描述、模块名、产品名）
+     * 3. 智能排序（匹配度评分：标题完全匹配 > 标题包含 > 描述匹配 > 其他字段匹配）
+     * 4. 如果列表接口的spec不完整，对标题匹配的需求进行深度搜索（获取详情）
      */
     searchStories(keyword: string, options?: {
         productId?: number;
         status?: StoryStatus;
         limit?: number;
+        deepSearch?: boolean;
     }): Promise<Story[]>;
+    /**
+     * 分词：将关键字拆分为多个词
+     * 支持中英文混合，中文按字符拆分，英文按单词拆分
+     */
+    private splitKeywords;
+    /**
+     * 计算匹配度评分
+     * 评分规则：
+     * - 标题完全匹配：100分
+     * - 标题包含关键字：80分
+     * - 标题包含部分关键字（分词匹配）：60分
+     * - 描述包含关键字：40分
+     * - 描述包含部分关键字：20分
+     * - 模块名/产品名匹配：10分
+     */
+    private calculateMatchScore;
     /**
      * 按产品名称搜索需求
      */

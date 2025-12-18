@@ -513,15 +513,17 @@ server.tool("searchStories",
         keyword: z.string(),
         productId: z.number().optional(),
         status: z.enum(['draft', 'active', 'closed', 'changed', 'all']).optional(),
-        limit: z.number().optional().default(20)
+        limit: z.number().optional().default(20),
+        deepSearch: z.boolean().optional().default(false).describe("是否启用深度搜索（获取需求详情以获取完整描述，速度较慢但结果更准确）")
     },
-    async ({ keyword, productId, status, limit = 20 }) => {
+    async ({ keyword, productId, status, limit = 20, deepSearch = false }) => {
         await ensureInitialized();
         try {
             const stories = await zentaoApi!.searchStories(keyword, {
                 productId,
                 status: status as StoryStatus,
-                limit
+                limit,
+                deepSearch
             });
             return {
                 content: [{ type: "text", text: JSON.stringify(stories, null, 2) }]
