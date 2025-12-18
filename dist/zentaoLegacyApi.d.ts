@@ -100,18 +100,34 @@ export declare class ZentaoLegacyAPI {
      * 2. 增强匹配逻辑（标题、描述、模块名、产品名）
      * 3. 智能排序（匹配度评分：标题完全匹配 > 标题包含 > 描述匹配 > 其他字段匹配）
      * 4. 如果列表接口的spec不完整，对标题匹配的需求进行深度搜索（获取详情）
+     * 5. 支持时间范围过滤（按创建时间 openedDate）
      */
     searchStories(keyword: string, options?: {
         productId?: number;
         status?: StoryStatus;
         limit?: number;
         deepSearch?: boolean;
+        startDate?: string;
+        endDate?: string;
     }): Promise<Story[]>;
     /**
      * 分词：将关键字拆分为多个词
      * 支持中英文混合，中文按字符拆分，英文按单词拆分
      */
     private splitKeywords;
+    /**
+     * 按时间范围过滤需求
+     * @param stories 需求列表
+     * @param startDate 开始时间（可选，格式：YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss）
+     * @param endDate 结束时间（可选，格式：YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss）
+     * @returns 过滤后的需求列表
+     */
+    private filterByDateRange;
+    /**
+     * 解析日期字符串
+     * 支持格式：YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss
+     */
+    private parseDate;
     /**
      * 计算匹配度评分
      * 评分规则：

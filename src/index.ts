@@ -12,6 +12,78 @@ import { formatStoryAsMarkdown, formatBugAsMarkdown, formatTaskAsMarkdown, gener
 import { analyzeStoryComplexity, analyzeBugPriority, analyzeTaskWorkload } from './utils/analyzer.js';
 import { suggestNextActionsForStory, suggestNextActionsForBug, suggestNextActionsForTask, formatSuggestionsAsMarkdown } from './utils/suggestions.js';
 
+/**
+ * 解析自然语言时间表达式
+ * 支持：今年、今年1月、最近3个月、今天、昨天、上个月等
+ */
+function parseNaturalDate(dateStr: string): string | undefined {
+    if (!dateStr) {
+        return undefined;
+    }
+
+    // 如果已经是标准格式（YYYY-MM-DD），直接返回
+    if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
+        return dateStr;
+    }
+
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth(); // 0-11
+    const date = now.getDate();
+
+    const lowerStr = dateStr.toLowerCase().trim();
+
+    // 今年
+    if (lowerStr === '今年' || lowerStr === 'this year') {
+        return `${year}-01-01`;
+    }
+
+    // 今年X月
+    const monthMatch = lowerStr.match(/今年(\d+)月/);
+    if (monthMatch) {
+        const m = parseInt(monthMatch[1]);
+        if (m >= 1 && m <= 12) {
+            return `${year}-${String(m).padStart(2, '0')}-01`;
+        }
+    }
+
+    // 最近N个月
+    const monthsMatch = lowerStr.match(/最近(\d+)个月/);
+    if (monthsMatch) {
+        const months = parseInt(monthsMatch[1]);
+        const targetDate = new Date(year, month - months, date);
+        return targetDate.toISOString().split('T')[0];
+    }
+
+    // 最近N天
+    const daysMatch = lowerStr.match(/最近(\d+)天/);
+    if (daysMatch) {
+        const days = parseInt(daysMatch[1]);
+        const targetDate = new Date(year, month, date - days);
+        return targetDate.toISOString().split('T')[0];
+    }
+
+    // 今天
+    if (lowerStr === '今天' || lowerStr === 'today') {
+        return `${year}-${String(month + 1).padStart(2, '0')}-${String(date).padStart(2, '0')}`;
+    }
+
+    // 昨天
+    if (lowerStr === '昨天' || lowerStr === 'yesterday') {
+        const yesterday = new Date(year, month, date - 1);
+        return yesterday.toISOString().split('T')[0];
+    }
+
+    // 上个月
+    if (lowerStr === '上个月' || lowerStr === 'last month') {
+        const lastMonth = new Date(year, month - 1, 1);
+        return lastMonth.toISOString().split('T')[0];
+    }
+
+    // 如果无法解析，返回原字符串（让后续的日期解析函数处理）
+    return dateStr;
+}
+
 // Create an MCP server
 const server = new McpServer({
     name: "Zentao 11.3 Legacy API",
@@ -510,20 +582,28 @@ server.tool("getStoryDetail",
 // Add searchStories tool
 server.tool("searchStories",
     {
-        keyword: z.string(),
-        productId: z.number().optional(),
-        status: z.enum(['draft', 'active', 'closed', 'changed', 'all']).optional(),
-        limit: z.number().optional().default(20),
-        deepSearch: z.boolean().optional().default(false).describe("是否启用深度搜索（获取需求详情以获取完整描述，速度较慢但结果更准确）")
+        keyword: z.string().describe("搜索关键字，支持中英文，会在需求标题和描述中搜索。例如：'大R促活'、'音视频'、'每日任务'等"),
+        productId: z.number().optional().describe("产品ID（可选），如果指定则只搜索该产品的需求"),
+        status: z.enum(['draft', 'active', 'closed', 'changed', 'all']).optional().describe("需求状态（可选）：draft(草稿)、active(激活)、closed(已关闭)、changed(已变更)、all(全部)"),
+        limit: z.number().optional().default(20).describe("返回结果数量限制（默认20条）"),
+        deepSearch: z.boolean().optional().default(false).describe("是否启用深度搜索（获取需求详情以获取完整描述，速度较慢但结果更准确）"),
+        startDate: z.string().optional().describe("开始时间（可选），格式：YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss。用于过滤需求的创建时间，例如：'2024-01-01' 表示2024年1月1日之后的需求。支持自然语言理解：'今年'、'今年1月'、'最近3个月'等"),
+        endDate: z.string().optional().describe("结束时间（可选），格式：YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss。用于过滤需求的创建时间，例如：'2024-12-31' 表示2024年12月31日之前的需求。支持自然语言理解：'今年'、'今年12月'、'今天'等")
     },
-    async ({ keyword, productId, status, limit = 20, deepSearch = false }) => {
+    async ({ keyword, productId, status, limit = 20, deepSearch = false, startDate, endDate }) => {
         await ensureInitialized();
         try {
+            // 解析自然语言时间表达式（如果 AI 传递的是自然语言）
+            const parsedStartDate = startDate ? parseNaturalDate(startDate) : undefined;
+            const parsedEndDate = endDate ? parseNaturalDate(endDate) : undefined;
+
             const stories = await zentaoApi!.searchStories(keyword, {
                 productId,
                 status: status as StoryStatus,
                 limit,
-                deepSearch
+                deepSearch,
+                startDate: parsedStartDate || startDate,
+                endDate: parsedEndDate || endDate
             });
             return {
                 content: [{ type: "text", text: JSON.stringify(stories, null, 2) }]

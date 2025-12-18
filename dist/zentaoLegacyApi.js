@@ -460,9 +460,10 @@ export class ZentaoLegacyAPI {
      * 2. 增强匹配逻辑（标题、描述、模块名、产品名）
      * 3. 智能排序（匹配度评分：标题完全匹配 > 标题包含 > 描述匹配 > 其他字段匹配）
      * 4. 如果列表接口的spec不完整，对标题匹配的需求进行深度搜索（获取详情）
+     * 5. 支持时间范围过滤（按创建时间 openedDate）
      */
     async searchStories(keyword, options) {
-        const { productId, status, limit = 50, deepSearch = false } = options || {};
+        const { productId, status, limit = 50, deepSearch = false, startDate, endDate } = options || {};
         try {
             let allStories = [];
             if (productId) {
@@ -484,6 +485,10 @@ export class ZentaoLegacyAPI {
                         continue;
                     }
                 }
+            }
+            // 时间范围过滤（如果指定了时间范围，先过滤再搜索，提高性能）
+            if (startDate || endDate) {
+                allStories = this.filterByDateRange(allStories, startDate, endDate);
             }
             // 分词：将关键字拆分为多个词（支持中英文）
             const keywords = this.splitKeywords(keyword);
@@ -552,6 +557,55 @@ export class ZentaoLegacyAPI {
             keywords.push(lowerKeyword);
         }
         return keywords;
+    }
+    /**
+     * 按时间范围过滤需求
+     * @param stories 需求列表
+     * @param startDate 开始时间（可选，格式：YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss）
+     * @param endDate 结束时间（可选，格式：YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss）
+     * @returns 过滤后的需求列表
+     */
+    filterByDateRange(stories, startDate, endDate) {
+        if (!startDate && !endDate) {
+            return stories;
+        }
+        const start = startDate ? this.parseDate(startDate) : null;
+        const end = endDate ? this.parseDate(endDate) : null;
+        return stories.filter(story => {
+            if (!story.openedDate) {
+                return false; // 没有创建时间的需求不包含在时间范围内
+            }
+            const storyDate = this.parseDate(story.openedDate);
+            if (!storyDate) {
+                return false;
+            }
+            // 检查是否在时间范围内
+            if (start && storyDate < start) {
+                return false;
+            }
+            if (end && storyDate > end) {
+                return false;
+            }
+            return true;
+        });
+    }
+    /**
+     * 解析日期字符串
+     * 支持格式：YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss
+     */
+    parseDate(dateStr) {
+        if (!dateStr) {
+            return null;
+        }
+        // 尝试解析常见格式
+        // 格式1: YYYY-MM-DD
+        // 格式2: YYYY-MM-DD HH:mm:ss
+        // 格式3: YYYY-MM-DDTHH:mm:ss (ISO格式)
+        const date = new Date(dateStr);
+        if (isNaN(date.getTime())) {
+            return null;
+        }
+        return date;
     }
     /**
      * 计算匹配度评分
