@@ -13,6 +13,65 @@ import { analyzeStoryComplexity, analyzeBugPriority, analyzeTaskWorkload } from 
 import { suggestNextActionsForStory, suggestNextActionsForBug, suggestNextActionsForTask, formatSuggestionsAsMarkdown } from './utils/suggestions.js';
 
 /**
+ * 解析模块链接，提取产品ID和模块ID
+ * 支持的链接格式：
+ * - product-browse-{productId}--byModule-{moduleId}.html - 产品模块（需求）
+ * - testtask-cases-{taskId}-byModule-{moduleId}.html - 测试任务用例模块
+ * - testcase-browse-{productId}-byModule-{moduleId}.html - 产品用例模块
+ * - bug-browse-{productId}--byModule-{moduleId}.html - Bug模块
+ * 
+ * @param url 链接URL
+ * @returns 解析结果 { type: 'story' | 'testcase' | 'bug', productId: number, moduleId: number, taskId?: number }
+ */
+function parseModuleUrl(url: string): { type: 'story' | 'testcase' | 'bug', productId: number, moduleId: number, taskId?: number } | null {
+    // 移除协议和域名，只保留路径部分
+    const path = url.replace(/^https?:\/\/[^\/]+/, '');
+    
+    // 匹配 product-browse-{productId}--byModule-{moduleId}
+    const productModuleMatch = path.match(/product-browse-(\d+)--byModule-(\d+)/);
+    if (productModuleMatch) {
+        return {
+            type: 'story',
+            productId: parseInt(productModuleMatch[1]),
+            moduleId: parseInt(productModuleMatch[2])
+        };
+    }
+    
+    // 匹配 testtask-cases-{taskId}-byModule-{moduleId}
+    const testtaskModuleMatch = path.match(/testtask-cases-(\d+)-byModule-(\d+)/);
+    if (testtaskModuleMatch) {
+        return {
+            type: 'testcase',
+            productId: 0, // 测试任务用例需要从任务详情获取产品ID
+            moduleId: parseInt(testtaskModuleMatch[2]),
+            taskId: parseInt(testtaskModuleMatch[1])
+        };
+    }
+    
+    // 匹配 testcase-browse-{productId}-byModule-{moduleId}
+    const testcaseModuleMatch = path.match(/testcase-browse-(\d+)-byModule-(\d+)/);
+    if (testcaseModuleMatch) {
+        return {
+            type: 'testcase',
+            productId: parseInt(testcaseModuleMatch[1]),
+            moduleId: parseInt(testcaseModuleMatch[2])
+        };
+    }
+    
+    // 匹配 bug-browse-{productId}--byModule-{moduleId}
+    const bugModuleMatch = path.match(/bug-browse-(\d+)--byModule-(\d+)/);
+    if (bugModuleMatch) {
+        return {
+            type: 'bug',
+            productId: parseInt(bugModuleMatch[1]),
+            moduleId: parseInt(bugModuleMatch[2])
+        };
+    }
+    
+    return null;
+}
+
+/**
  * 解析自然语言时间表达式
  * 支持：今年、今年1月、最近3个月、今天、昨天、上个月等
  */
@@ -311,19 +370,53 @@ server.tool("getBugDetail",
                 result.hasFiles = result.fileIds.length > 0;
             }
 
-            // 下载图片（并行）
+            // 下载图片（并行，带超时控制）
+            let downloadedImages: any[] = [];
+            let imageDownloadStats = { total: 0, success: 0, failed: 0 };
             if (shouldDownloadImages && result.images.length > 0) {
-                result.downloadedImages = await downloadImages(zentaoApi!, result.images, true);
+                // 去重图片 URL，避免重复下载
+                const uniqueImageUrls = Array.from(new Set(result.images as string[]));
+                imageDownloadStats.total = uniqueImageUrls.length;
+                
+                try {
+                    // 使用超时控制，即使部分图片超时/失败也能继续
+                    downloadedImages = await downloadImages(zentaoApi!, uniqueImageUrls, true, 15000);
+                    imageDownloadStats.success = downloadedImages.filter(img => img.success).length;
+                    imageDownloadStats.failed = downloadedImages.filter(img => !img.success).length;
+                } catch (error) {
+                    // 即使下载过程出错，也继续返回结果（可能部分图片已下载成功）
+                    imageDownloadStats.failed = imageDownloadStats.total;
+                    console.warn(`图片下载过程中出现错误，但继续返回已成功下载的图片:`, error);
+                }
             }
+
+            // 构建返回的 JSON（移除原始图片 URL，避免 Cursor 循环读取）
+            const imageInfo = result.images.length > 0 
+                ? `已找到 ${result.images.length} 张图片，成功下载 ${imageDownloadStats.success} 张${imageDownloadStats.failed > 0 ? `，${imageDownloadStats.failed} 张下载失败或超时` : ''}`
+                : [];
+            
+            const jsonResult = {
+                ...result,
+                images: imageInfo,
+                downloadedImages: downloadedImages.map((img, idx) => ({
+                    success: img.success,
+                    size: img.size,
+                    mimeType: img.mimeType,
+                    // 不包含 base64 和 URL，避免 JSON 过大和循环读取
+                    index: idx + 1,
+                    error: img.success ? undefined : img.error
+                }))
+            };
 
             // 构建返回内容，包含文本和图片
             const content: any[] = [
-                { type: "text", text: JSON.stringify(result, null, 2) }
+                { type: "text", text: JSON.stringify(jsonResult, null, 2) }
             ];
 
             // 添加图片内容（使用MCP协议的image类型）
-            if (result.downloadedImages && result.downloadedImages.length > 0) {
-                const imageContent = buildImageContent(result.downloadedImages, 'bug', bugId);
+            // 只添加成功下载的图片，失败的图片不会阻塞流程
+            if (downloadedImages && downloadedImages.length > 0) {
+                const imageContent = buildImageContent(downloadedImages, 'bug', bugId);
                 content.push(...imageContent);
             }
 
@@ -478,12 +571,13 @@ server.tool("resolveBug",
 server.tool("getProductStories",
     {
         productId: z.number(),
-        status: z.enum(['draft', 'active', 'closed', 'changed', 'all']).optional()
+        status: z.enum(['draft', 'active', 'closed', 'changed', 'all']).optional(),
+        moduleId: z.number().optional()
     },
-    async ({ productId, status }) => {
+    async ({ productId, status, moduleId }) => {
         await ensureInitialized();
         try {
-            const stories = await zentaoApi!.getProductStories(productId, status as StoryStatus);
+            const stories = await zentaoApi!.getProductStories(productId, status as StoryStatus, moduleId);
             return {
                 content: [{ type: "text", text: JSON.stringify(stories, null, 2) }]
             };
@@ -529,23 +623,57 @@ server.tool("getStoryDetail",
                 result.hasFiles = result.fileIds.length > 0;
             }
 
-            // 下载图片（并行）
+            // 下载图片（并行，带超时控制）
+            let downloadedImages: any[] = [];
+            let imageDownloadStats = { total: 0, success: 0, failed: 0 };
             if (shouldDownloadImages && result.images.length > 0) {
-                result.downloadedImages = await downloadImages(zentaoApi!, result.images, true);
+                // 去重图片 URL，避免重复下载
+                const uniqueImageUrls = Array.from(new Set(result.images as string[]));
+                imageDownloadStats.total = uniqueImageUrls.length;
+                
+                try {
+                    // 使用超时控制，即使部分图片超时/失败也能继续
+                    downloadedImages = await downloadImages(zentaoApi!, uniqueImageUrls, true, 15000);
+                    imageDownloadStats.success = downloadedImages.filter(img => img.success).length;
+                    imageDownloadStats.failed = downloadedImages.filter(img => !img.success).length;
+                } catch (error) {
+                    // 即使下载过程出错，也继续返回结果（可能部分图片已下载成功）
+                    imageDownloadStats.failed = imageDownloadStats.total;
+                    console.warn(`图片下载过程中出现错误，但继续返回已成功下载的图片:`, error);
+                }
             }
+
+            // 构建返回的 JSON（移除原始图片 URL，避免 Cursor 循环读取）
+            const imageInfo = result.images.length > 0 
+                ? `已找到 ${result.images.length} 张图片，成功下载 ${imageDownloadStats.success} 张${imageDownloadStats.failed > 0 ? `，${imageDownloadStats.failed} 张下载失败或超时` : ''}`
+                : [];
+            
+            const jsonResult = {
+                ...result,
+                images: imageInfo,
+                downloadedImages: downloadedImages.map((img, idx) => ({
+                    success: img.success,
+                    size: img.size,
+                    mimeType: img.mimeType,
+                    // 不包含 base64 和 URL，避免 JSON 过大和循环读取
+                    index: idx + 1,
+                    error: img.success ? undefined : img.error
+                }))
+            };
 
             // 构建返回内容，包含文本和图片
             const content: any[] = [
-                { type: "text", text: JSON.stringify(result, null, 2) }
+                { type: "text", text: JSON.stringify(jsonResult, null, 2) }
             ];
 
             // 添加图片内容（使用MCP协议的image类型）
-            if (result.downloadedImages && result.downloadedImages.length > 0) {
-                const imageContent = buildImageContent(result.downloadedImages, 'story', storyId);
+            // 只添加成功下载的图片，失败的图片不会阻塞流程
+            if (downloadedImages && downloadedImages.length > 0) {
+                const imageContent = buildImageContent(downloadedImages, 'story', storyId);
                 content.push(...imageContent);
             }
 
-            // 添加下一步建议
+            // 添加下一步建议（即使图片下载失败，也继续提供建议）
             const relatedBugs = await zentaoApi!.getStoryRelatedBugs(storyId).catch(() => []);
             const testCases = await zentaoApi!.getStoryTestCases(storyId).catch(() => []);
             const suggestions = suggestNextActionsForStory(
@@ -655,6 +783,122 @@ server.tool("searchStoriesByProductName",
 );
 
 // ==================== 测试用例相关接口 ====================
+
+// Add getProductBugs tool
+server.tool("getProductBugs",
+    {
+        productId: z.number(),
+        status: z.enum(['active', 'resolved', 'closed', 'all']).optional(),
+        moduleId: z.number().optional()
+    },
+    async ({ productId, status, moduleId }) => {
+        await ensureInitialized();
+        try {
+            const bugs = await zentaoApi!.getProductBugs(productId, status as BugStatus, moduleId);
+            return {
+                content: [{ type: "text", text: JSON.stringify(bugs, null, 2) }]
+            };
+        } catch (error) {
+            if (error instanceof ZentaoError) {
+                throw error;
+            }
+            throw createError(
+                ErrorCode.API_ERROR,
+                `获取产品 ${productId} 的 Bug 列表失败: ${error instanceof Error ? error.message : String(error)}`,
+                undefined,
+                error
+            );
+        }
+    }
+);
+
+// Add getModuleItems tool - 根据模块链接获取对应的需求、用例或Bug
+server.tool("getModuleItems",
+    {
+        url: z.string().describe("模块链接URL，例如：product-browse-245--byModule-1377.html")
+    },
+    async ({ url }) => {
+        await ensureInitialized();
+        try {
+            const parsed = parseModuleUrl(url);
+            if (!parsed) {
+                throw createError(
+                    ErrorCode.API_ERROR,
+                    `无法解析模块链接: ${url}。支持的格式：product-browse-{productId}--byModule-{moduleId}.html, bug-browse-{productId}--byModule-{moduleId}.html, testcase-browse-{productId}-byModule-{moduleId}.html`
+                );
+            }
+
+            let result: any;
+
+            if (parsed.type === 'story') {
+                // 获取模块下的需求
+                const stories = await zentaoApi!.getProductStories(parsed.productId, undefined, parsed.moduleId);
+                result = {
+                    type: 'story',
+                    productId: parsed.productId,
+                    moduleId: parsed.moduleId,
+                    items: stories,
+                    count: stories.length
+                };
+            } else if (parsed.type === 'testcase') {
+                // 获取模块下的用例
+                if (parsed.taskId) {
+                    // 测试任务的用例模块，需要先获取任务详情获取产品ID
+                    const task = await zentaoApi!.getTaskDetail(parsed.taskId);
+                    if (task.product) {
+                        const productId = typeof task.product === 'string' ? parseInt(task.product) : task.product;
+                        const testCases = await zentaoApi!.getProductTestCases(productId, undefined, parsed.moduleId);
+                        result = {
+                            type: 'testcase',
+                            productId: productId,
+                            moduleId: parsed.moduleId,
+                            taskId: parsed.taskId,
+                            items: testCases,
+                            count: testCases.length
+                        };
+                    } else {
+                        throw createError(ErrorCode.API_ERROR, `无法从任务 ${parsed.taskId} 获取产品ID`);
+                    }
+                } else if (parsed.productId > 0) {
+                    const testCases = await zentaoApi!.getProductTestCases(parsed.productId, undefined, parsed.moduleId);
+                    result = {
+                        type: 'testcase',
+                        productId: parsed.productId,
+                        moduleId: parsed.moduleId,
+                        items: testCases,
+                        count: testCases.length
+                    };
+                } else {
+                    throw createError(ErrorCode.API_ERROR, `无法确定产品ID`);
+                }
+            } else if (parsed.type === 'bug') {
+                // 获取模块下的Bug
+                const bugs = await zentaoApi!.getProductBugs(parsed.productId, undefined, parsed.moduleId);
+                result = {
+                    type: 'bug',
+                    productId: parsed.productId,
+                    moduleId: parsed.moduleId,
+                    items: bugs,
+                    count: bugs.length
+                };
+            }
+
+            return {
+                content: [{ type: "text", text: JSON.stringify(result, null, 2) }]
+            };
+        } catch (error) {
+            if (error instanceof ZentaoError) {
+                throw error;
+            }
+            throw createError(
+                ErrorCode.API_ERROR,
+                `获取模块数据失败: ${error instanceof Error ? error.message : String(error)}`,
+                undefined,
+                error
+            );
+        }
+    }
+);
 
 // Add getProductTestCases tool
 server.tool("getProductTestCases",

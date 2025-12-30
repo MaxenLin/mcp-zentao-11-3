@@ -2,7 +2,7 @@
  * 禅道旧版API (11.x版本)
  * 使用Session认证方式
  */
-import { Bug, Task, Story, StoryStatus, TestCase, TestCaseStatus, TestResult, TestTask, CreateTestCaseRequest, TestRunRequest, Product, TaskUpdate, BugResolution } from './types.js';
+import { Bug, BugStatus, Task, Story, StoryStatus, TestCase, TestCaseStatus, TestResult, TestTask, CreateTestCaseRequest, TestRunRequest, Product, TaskUpdate, BugResolution } from './types.js';
 import { ZentaoConfig } from './config.js';
 export declare class ZentaoLegacyAPI {
     private config;
@@ -52,6 +52,13 @@ export declare class ZentaoLegacyAPI {
      */
     getMyBugs(): Promise<Bug[]>;
     /**
+     * 获取产品的Bug列表（支持分页和模块过滤）
+     * @param productId 产品ID
+     * @param status Bug状态（可选）
+     * @param moduleId 模块ID（可选），当提供时，只获取该模块下的Bug
+     */
+    getProductBugs(productId: number, status?: BugStatus, moduleId?: number): Promise<Bug[]>;
+    /**
      * 获取Bug详情
      */
     getBugDetail(bugId: number): Promise<Bug>;
@@ -69,8 +76,11 @@ export declare class ZentaoLegacyAPI {
     resolveBug(bugId: number, resolution: BugResolution): Promise<void>;
     /**
      * 获取产品的需求列表（支持分页，自动获取所有需求）
+     * @param productId 产品ID
+     * @param status 需求状态（可选）
+     * @param moduleId 模块ID（可选），当提供时，只获取该模块下的需求
      */
-    getProductStories(productId: number, status?: StoryStatus): Promise<Story[]>;
+    getProductStories(productId: number, status?: StoryStatus, moduleId?: number): Promise<Story[]>;
     /**
      * 获取需求详情
      */

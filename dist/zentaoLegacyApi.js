@@ -228,6 +228,75 @@ export class ZentaoLegacyAPI {
         }));
     }
     /**
+     * 获取产品的Bug列表（支持分页和模块过滤）
+     * @param productId 产品ID
+     * @param status Bug状态（可选）
+     * @param moduleId 模块ID（可选），当提供时，只获取该模块下的Bug
+     */
+    async getProductBugs(productId, status, moduleId) {
+        try {
+            // 禅道11.x API路径：/bug-browse-{productId}-{branch}-{browseType}-{param}-{orderBy}-{recTotal}-{recPerPage}-{pageID}.json
+            // 当 browseType = 'byModule' 时，param 是模块ID
+            // 当 browseType 是状态时，param 是 0
+            let browseType;
+            let param = 0;
+            if (moduleId) {
+                // 按模块浏览
+                browseType = 'byModule';
+                param = moduleId;
+            }
+            else if (status && status !== 'all') {
+                // 按状态浏览
+                browseType = status;
+                param = 0;
+            }
+            else {
+                // 浏览全部
+                browseType = 'all';
+                param = 0;
+            }
+            const allBugs = [];
+            let currentPage = 1;
+            const pageSize = 100;
+            let hasMore = true;
+            while (hasMore) {
+                const url = `/bug-browse-${productId}-0-${browseType}-${param}-id_desc-0-${pageSize}-${currentPage}.json`;
+                const data = await this.request(url);
+                const bugs = data.bugs || {};
+                const bugsArray = Object.values(bugs);
+                allBugs.push(...bugsArray);
+                // 检查分页信息
+                if (data.pager) {
+                    const { recTotal, recPerPage, pageID } = data.pager;
+                    const totalPages = Math.ceil(recTotal / recPerPage);
+                    hasMore = currentPage < totalPages && bugsArray.length > 0;
+                }
+                else {
+                    hasMore = false;
+                }
+                currentPage++;
+                // 安全限制：最多获取100页
+                if (currentPage > 100) {
+                    break;
+                }
+            }
+            return allBugs.map((bug) => ({
+                id: parseInt(bug.id),
+                title: bug.title,
+                status: bug.status,
+                severity: parseInt(bug.severity),
+                steps: bug.steps || '',
+                openedDate: bug.openedDate,
+                product: bug.product ? parseInt(bug.product) : undefined,
+                module: bug.module ? parseInt(bug.module) : undefined,
+            }));
+        }
+        catch (error) {
+            console.error('获取产品Bug列表失败:', error);
+            throw error;
+        }
+    }
+    /**
      * 获取Bug详情
      */
     async getBugDetail(bugId) {
@@ -281,15 +350,18 @@ export class ZentaoLegacyAPI {
     }
     /**
      * 获取产品的需求列表（支持分页，自动获取所有需求）
+     * @param productId 产品ID
+     * @param status 需求状态（可选）
+     * @param moduleId 模块ID（可选），当提供时，只获取该模块下的需求
      */
-    async getProductStories(productId, status) {
+    async getProductStories(productId, status, moduleId) {
         // 禅道11.x API分页支持：
         // URL格式：/product-browse-{productId}-{branch}-{browseType}-{param}-{orderBy}-{recTotal}-{recPerPage}-{pageID}.json
         // 参数说明：
         // - productId: 产品ID
         // - branch: 分支（默认0）
-        // - browseType: unclosed(未关闭) | all(全部) | active(激活) | draft(草稿) | closed(已关闭) | changed(已变更)
-        // - param: 模块ID或查询ID（默认0）
+        // - browseType: unclosed(未关闭) | all(全部) | active(激活) | draft(草稿) | closed(已关闭) | changed(已变更) | byModule(按模块)
+        // - param: 模块ID或查询ID（默认0），当browseType=byModule时，param是模块ID
         // - orderBy: 排序字段（默认id_desc）
         // - recTotal: 总记录数（可以为0，系统会自动计算）
         // - recPerPage: 每页记录数（默认20，可以设置更大值如100、500）
@@ -300,31 +372,40 @@ export class ZentaoLegacyAPI {
         let hasMore = true;
         // 映射status参数到browseType
         // 注意：禅道11.x的browseType只支持简单的值，不像RESTful API那样复杂
-        let browseType = 'unclosed'; // 默认获取未关闭的需求
-        if (status) {
-            switch (status) {
-                case 'all':
-                    browseType = 'unclosed'; // 11.x中all返回0条，所以用unclosed代替
-                    break;
-                case 'active':
-                    browseType = 'unclosed'; // active也映射到unclosed
-                    break;
-                case 'draft':
-                    browseType = 'unclosed'; // draft也映射到unclosed
-                    break;
-                case 'closed':
-                    browseType = 'unclosed'; // closed也映射到unclosed
-                    break;
-                case 'changed':
-                    browseType = 'unclosed'; // changed也映射到unclosed
-                    break;
-                default:
-                    browseType = 'unclosed';
+        let browseType;
+        let param = 0;
+        if (moduleId) {
+            // 按模块浏览
+            browseType = 'byModule';
+            param = moduleId;
+        }
+        else {
+            browseType = 'unclosed'; // 默认获取未关闭的需求
+            if (status) {
+                switch (status) {
+                    case 'all':
+                        browseType = 'unclosed'; // 11.x中all返回0条，所以用unclosed代替
+                        break;
+                    case 'active':
+                        browseType = 'unclosed'; // active也映射到unclosed
+                        break;
+                    case 'draft':
+                        browseType = 'unclosed'; // draft也映射到unclosed
+                        break;
+                    case 'closed':
+                        browseType = 'unclosed'; // closed也映射到unclosed
+                        break;
+                    case 'changed':
+                        browseType = 'unclosed'; // changed也映射到unclosed
+                        break;
+                    default:
+                        browseType = 'unclosed';
+                }
             }
         }
         while (hasMore) {
             // 构建URL：/product-browse-{productId}-{branch}-{browseType}-{param}-{orderBy}-{recTotal}-{recPerPage}-{pageID}.json
-            const url = `/product-browse-${productId}-0-${browseType}-0-id_desc-0-${pageSize}-${currentPage}.json`;
+            const url = `/product-browse-${productId}-0-${browseType}-${param}-id_desc-0-${pageSize}-${currentPage}.json`;
             const data = await this.request(url);
             const stories = data.stories || {};
             const storiesArray = Object.values(stories);
