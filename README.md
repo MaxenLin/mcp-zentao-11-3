@@ -44,6 +44,8 @@ npm install -g @maxenlin/mcp-zentao-11-3
 - `ZENTAO_USERNAME`: 禅道用户名
 - `ZENTAO_PASSWORD`: 禅道密码
 
+> **提示**：工作空间路径会自动检测，批量导出功能会将文件保存到当前项目工作空间的 `export/` 目录。
+
 ### 方法 2：使用 npx
 
 在支持 MCP 的 IDE/工具配置文件中添加（以 Cursor IDE 为例）：
@@ -68,6 +70,8 @@ npm install -g @maxenlin/mcp-zentao-11-3
 - `ZENTAO_URL`: 禅道服务器地址（必须包含 `/zentao` 路径）
 - `ZENTAO_USERNAME`: 禅道用户名
 - `ZENTAO_PASSWORD`: 禅道密码
+
+> **提示**：工作空间路径会自动检测，批量导出功能会将文件保存到当前项目工作空间的 `export/` 目录。
 
 ## 🚀 使用
 
@@ -129,6 +133,16 @@ npm install -g @maxenlin/mcp-zentao-11-3
 生成需求2508的代码审查检查清单
 ```
 
+### 数据导出
+
+```
+导出需求2508到文件
+导出Bug 20692到文件
+导出模块1384的所有需求
+导出2025年的所有需求
+导出包含"接福"关键词的需求
+```
+
 ## 📋 可用工具
 
 ### 配置管理
@@ -147,6 +161,7 @@ npm install -g @maxenlin/mcp-zentao-11-3
 
 - `getMyBugs` - 获取我的Bug列表
 - `getBugDetail` - 获取Bug详情
+- `getProductBugs` - 获取产品的Bug列表（支持按模块和状态筛选）
 - `resolveBug` - 解决Bug
 
 ### 产品管理
@@ -212,6 +227,17 @@ npm install -g @maxenlin/mcp-zentao-11-3
 
 - `createTaskFromStory` - 根据需求创建任务（提供手动操作指南）
 - `createTaskFromBug` - 根据Bug创建修复任务（提供手动操作指南）
+
+### 数据导出
+
+- `exportItems` - 统一导出接口（支持单个、模块批量、搜索批量导出，含图片，仅支持 Markdown 格式）
+- `getModuleItems` - 根据模块链接获取对应的需求、用例或Bug（JSON格式，已包含图片信息）
+- `exportModuleItemsAsMarkdown` - 根据模块链接导出需求、用例或Bug为Markdown格式（已包含图片）
+- `exportStoriesBySearch` - 根据搜索条件导出需求（支持自然语言，已包含图片，仅支持 Markdown 格式）
+- `exportStory` - 导出单个需求到文件（仅支持 Markdown 格式，含图片）
+- `exportBug` - 导出单个Bug到文件（仅支持 Markdown 格式，含图片）
+
+> **提示**：所有导出功能都会自动下载并保存图片到本地 `images/` 子目录，Markdown 文件中的图片链接会自动替换为相对路径。
 
 ## 📝 许可证
 

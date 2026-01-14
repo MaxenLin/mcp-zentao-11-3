@@ -323,7 +323,7 @@ export class ZentaoLegacyAPI {
                 }
             }
 
-            return allBugs.map((bug: any) => ({
+            let mappedBugs = allBugs.map((bug: any) => ({
                 id: parseInt(bug.id),
                 title: bug.title,
                 status: bug.status as BugStatus,
@@ -333,6 +333,14 @@ export class ZentaoLegacyAPI {
                 product: bug.product ? parseInt(bug.product) : undefined,
                 module: bug.module ? parseInt(bug.module) : undefined,
             }));
+
+            // 如果同时指定了 moduleId 和 status，需要在本地进行状态过滤
+            // 因为禅道API的 browseType 只能是一个值（要么 byModule，要么状态）
+            if (moduleId && status && status !== 'all') {
+                mappedBugs = mappedBugs.filter(bug => bug.status === status);
+            }
+
+            return mappedBugs;
         } catch (error) {
             console.error('获取产品Bug列表失败:', error);
             throw error;
@@ -433,25 +441,25 @@ export class ZentaoLegacyAPI {
             param = moduleId;
         } else {
             browseType = 'unclosed'; // 默认获取未关闭的需求
-            if (status) {
-                switch (status) {
-                    case 'all':
-                        browseType = 'unclosed'; // 11.x中all返回0条，所以用unclosed代替
-                        break;
-                    case 'active':
-                        browseType = 'unclosed'; // active也映射到unclosed
-                        break;
-                    case 'draft':
-                        browseType = 'unclosed'; // draft也映射到unclosed
-                        break;
-                    case 'closed':
-                        browseType = 'unclosed'; // closed也映射到unclosed
-                        break;
-                    case 'changed':
-                        browseType = 'unclosed'; // changed也映射到unclosed
-                        break;
-                    default:
-                        browseType = 'unclosed';
+        if (status) {
+            switch (status) {
+                case 'all':
+                    browseType = 'unclosed'; // 11.x中all返回0条，所以用unclosed代替
+                    break;
+                case 'active':
+                    browseType = 'unclosed'; // active也映射到unclosed
+                    break;
+                case 'draft':
+                    browseType = 'unclosed'; // draft也映射到unclosed
+                    break;
+                case 'closed':
+                    browseType = 'unclosed'; // closed也映射到unclosed
+                    break;
+                case 'changed':
+                    browseType = 'unclosed'; // changed也映射到unclosed
+                    break;
+                default:
+                    browseType = 'unclosed';
                 }
             }
         }
@@ -488,7 +496,7 @@ export class ZentaoLegacyAPI {
         }
 
         // 映射为标准格式
-        const mappedStories = allStories.map((story: any) => ({
+        let mappedStories = allStories.map((story: any) => ({
             id: parseInt(story.id),
             title: story.title,
             status: story.status as string,
@@ -500,6 +508,12 @@ export class ZentaoLegacyAPI {
             assignedTo: story.assignedTo,
             spec: story.spec || '',
         }));
+
+        // 如果同时指定了 moduleId 和 status，需要在本地进行状态过滤
+        // 因为禅道API的 browseType 只能是一个值（要么 byModule，要么状态）
+        if (moduleId && status && status !== 'all') {
+            mappedStories = mappedStories.filter(story => story.status === status);
+        }
 
         return mappedStories;
     }
@@ -915,13 +929,37 @@ export class ZentaoLegacyAPI {
                 param = 0;
             }
 
-            const url = `/testcase-browse-${productId}-0-${browseType}-${param}-id_desc-0-100-1.json`;
+            const allCases: any[] = [];
+            let currentPage = 1;
+            const pageSize = 100;
+            let hasMore = true;
 
+            while (hasMore) {
+                const url = `/testcase-browse-${productId}-0-${browseType}-${param}-id_desc-0-${pageSize}-${currentPage}.json`;
             const data = await this.request<any>(url);
             const cases = data.cases || {};
             const casesArray = Object.values(cases);
 
-            const mappedCases = casesArray.map((testCase: any) => ({
+                allCases.push(...casesArray);
+
+                // 检查分页信息
+                if (data.pager) {
+                    const { recTotal, recPerPage, pageID } = data.pager;
+                    const totalPages = Math.ceil(recTotal / recPerPage);
+                    hasMore = currentPage < totalPages && casesArray.length > 0;
+                } else {
+                    hasMore = false;
+                }
+
+                currentPage++;
+
+                // 安全限制：最多获取100页
+                if (currentPage > 100) {
+                    break;
+                }
+            }
+
+            let mappedCases = allCases.map((testCase: any) => ({
                 id: parseInt(testCase.id),
                 product: parseInt(testCase.product),
                 module: testCase.module ? parseInt(testCase.module) : undefined,
@@ -937,6 +975,12 @@ export class ZentaoLegacyAPI {
                 lastEditedBy: testCase.lastEditedBy,
                 lastEditedDate: testCase.lastEditedDate,
             }));
+
+            // 如果同时指定了 moduleId 和 status，需要在本地进行状态过滤
+            // 因为禅道API的 browseType 只能是一个值（要么 byModule，要么状态）
+            if (moduleId && status && status !== 'all') {
+                mappedCases = mappedCases.filter(testCase => testCase.status === status);
+            }
 
             return mappedCases;
         } catch (error) {

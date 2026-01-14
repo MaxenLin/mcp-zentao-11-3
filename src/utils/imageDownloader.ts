@@ -4,6 +4,8 @@
  */
 
 import { ZentaoLegacyAPI } from '../zentaoLegacyApi.js';
+import fs from 'fs';
+import path from 'path';
 
 export interface DownloadedImage {
     url: string;
@@ -150,5 +152,88 @@ export function buildImageContent(
     });
 
     return content;
+}
+
+/**
+ * 保存图片到本地文件系统
+ * @param downloadedImages 已下载的图片数组
+ * @param exportDir 导出目录
+ * @param entityType 实体类型（story/bug）
+ * @param entityId 实体ID
+ * @returns 保存结果数组，包含本地路径信息
+ */
+export interface SavedImage {
+    originalUrl: string;
+    localPath: string;
+    relativePath: string;
+    success: boolean;
+    error?: string;
+}
+
+export async function saveImagesToDisk(
+    downloadedImages: DownloadedImage[],
+    exportDir: string,
+    entityType: 'story' | 'bug',
+    entityId: number
+): Promise<SavedImage[]> {
+    const imagesDir = path.join(exportDir, 'images');
+    
+    // 确保图片目录存在
+    if (!fs.existsSync(imagesDir)) {
+        fs.mkdirSync(imagesDir, { recursive: true });
+    }
+    
+    const savedImages: SavedImage[] = [];
+    
+    for (let i = 0; i < downloadedImages.length; i++) {
+        const img = downloadedImages[i];
+        
+        if (!img.success || !img.base64) {
+            savedImages.push({
+                originalUrl: img.url,
+                localPath: '',
+                relativePath: '',
+                success: false,
+                error: img.error || '图片下载失败'
+            });
+            continue;
+        }
+        
+        try {
+            // 根据 MIME 类型确定文件扩展名
+            let ext = '.png';
+            if (img.mimeType === 'image/jpeg' || img.mimeType === 'image/jpg') {
+                ext = '.jpg';
+            } else if (img.mimeType === 'image/gif') {
+                ext = '.gif';
+            }
+            
+            // 生成文件名：{entityType}_{entityId}_image_{index}{ext}
+            const filename = `${entityType}_${entityId}_image_${i + 1}${ext}`;
+            const localPath = path.join(imagesDir, filename);
+            const relativePath = path.join('images', filename);
+            
+            // 将 base64 转换为 Buffer 并保存
+            const imageBuffer = Buffer.from(img.base64, 'base64');
+            fs.writeFileSync(localPath, imageBuffer);
+            
+            savedImages.push({
+                originalUrl: img.url,
+                localPath: localPath,
+                relativePath: relativePath,
+                success: true
+            });
+        } catch (error) {
+            savedImages.push({
+                originalUrl: img.url,
+                localPath: '',
+                relativePath: '',
+                success: false,
+                error: error instanceof Error ? error.message : String(error)
+            });
+        }
+    }
+    
+    return savedImages;
 }
 
