@@ -1,6 +1,6 @@
 {
   "name": "@maxenlin/mcp-zentao-11-3",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Zentao 11.3 legacy 版 MCP 服务器，只支持旧版 Session API，纯净无 REST v1",
   "main": "dist/index.js",
   "type": "module",

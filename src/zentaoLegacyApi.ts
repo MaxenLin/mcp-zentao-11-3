@@ -96,15 +96,50 @@ export class ZentaoLegacyAPI {
     }
 
     /**
-     * 发起请求
+     * 强制重新登录（清除sessionId后重新登录）
      */
-    private async request<T>(url: string, params?: any): Promise<T> {
+    private async forceReLogin(): Promise<string> {
+        this.sessionId = null;
+        await this.login();
+        if (!this.sessionId) {
+            throw new Error('重新登录失败：未能获取sessionId');
+        }
+        return this.sessionId;
+    }
+
+    /**
+     * 检测响应是否为会话过期（重定向到登录页面）
+     */
+    private isSessionExpired(responseData: any): boolean {
+        if (typeof responseData === 'string') {
+            // 检测HTML重定向到登录页面
+            return responseData.includes('user-login') || 
+                   responseData.includes('self.location') ||
+                   responseData.includes('<script>');
+        }
+        return false;
+    }
+
+    /**
+     * 发起请求（带自动重试）
+     */
+    private async request<T>(url: string, params?: any, retried: boolean = false): Promise<T> {
         const sid = await this.ensureLoggedIn();
         
         try {
             const fullUrl = `${url}?zentaosid=${sid}`;
             
             const response = await this.client.get(fullUrl, { params });
+
+            // 检测会话过期
+            if (this.isSessionExpired(response.data)) {
+                if (!retried) {
+                    console.log('检测到会话过期，正在重新登录...');
+                    await this.forceReLogin();
+                    return this.request<T>(url, params, true);
+                }
+                throw new Error('会话已过期，重新登录后仍然失败');
+            }
 
             if (response.data.status === 'success') {
                 return JSON.parse(response.data.data);
@@ -125,9 +160,9 @@ export class ZentaoLegacyAPI {
     }
 
     /**
-     * POST请求
+     * POST请求（带自动重试）
      */
-    private async postRequest<T>(url: string, data?: any): Promise<T> {
+    private async postRequest<T>(url: string, data?: any, retried: boolean = false): Promise<T> {
         const sid = await this.ensureLoggedIn();
         
         try {
@@ -141,6 +176,16 @@ export class ZentaoLegacyAPI {
             }
 
             const response = await this.client.post(fullUrl, params);
+
+            // 检测会话过期
+            if (this.isSessionExpired(response.data)) {
+                if (!retried) {
+                    console.log('检测到会话过期，正在重新登录...');
+                    await this.forceReLogin();
+                    return this.postRequest<T>(url, data, true);
+                }
+                throw new Error('会话已过期，重新登录后仍然失败');
+            }
 
             if (response.data.status === 'success') {
                 return response.data.data ? JSON.parse(response.data.data) : response.data;

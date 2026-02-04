@@ -22,11 +22,19 @@ export declare class ZentaoLegacyAPI {
      */
     private ensureLoggedIn;
     /**
-     * 发起请求
+     * 强制重新登录（清除sessionId后重新登录）
+     */
+    private forceReLogin;
+    /**
+     * 检测响应是否为会话过期（重定向到登录页面）
+     */
+    private isSessionExpired;
+    /**
+     * 发起请求（带自动重试）
      */
     private request;
     /**
-     * POST请求
+     * POST请求（带自动重试）
      */
     private postRequest;
     /**

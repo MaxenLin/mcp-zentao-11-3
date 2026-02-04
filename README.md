@@ -13,6 +13,93 @@
 
 - **Node.js**: >= 18.0.0（推荐使用 LTS 版本）
 
+## ⚠️ 故障排除
+
+### Windows 系统：`node` 命令未找到
+
+如果遇到错误 `'node' 不是内部或外部命令` 或 `command spawn node ENOENT`，说明系统找不到 Node.js。
+
+#### 解决方案 1：安装 Node.js 并添加到 PATH（推荐）
+
+1. **下载并安装 Node.js**
+   - 访问 [Node.js 官网](https://nodejs.org/) 下载 LTS 版本
+   - 运行安装程序，**确保勾选 "Add to PATH" 选项**
+
+2. **验证安装**
+   ```powershell
+   node --version
+   npm --version
+   ```
+
+3. **如果已安装但未在 PATH 中**
+   - 找到 Node.js 安装路径（通常在 `C:\Program Files\nodejs\` 或 `C:\Users\你的用户名\AppData\Local\Programs\nodejs\`）
+   - 将 Node.js 安装目录添加到系统 PATH 环境变量
+   - 重启 Cursor IDE
+
+#### 解决方案 2：使用完整路径（推荐方案）
+
+如果 Node.js 已安装但 Cursor 无法读取 PATH，可以在配置中使用完整路径：
+
+**使用 nvm-windows 安装的 Node.js：**
+```json
+{
+  "mcpServers": {
+    "zentao-11-3": {
+      "command": "C:\\nvm4w\\nodejs\\node.exe",
+      "args": ["D:/develop/code/mcp-zentao/mcp-zentao-11.3/dist/index.js"],
+      "env": {
+        "ZENTAO_URL": "http://your-zentao-url/zentao",
+        "ZENTAO_USERNAME": "your-username",
+        "ZENTAO_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+**使用标准安装的 Node.js：**
+```json
+{
+  "mcpServers": {
+    "zentao-11-3": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": ["D:/develop/code/mcp-zentao/mcp-zentao-11.3/dist/index.js"],
+      "env": {
+        "ZENTAO_URL": "http://your-zentao-url/zentao",
+        "ZENTAO_USERNAME": "your-username",
+        "ZENTAO_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+> **注意**：
+> - 将路径中的 Node.js 路径替换为您的实际安装路径
+> - 将 `D:/develop/code/mcp-zentao/mcp-zentao-11.3/dist/index.js` 替换为实际的包安装路径或项目路径
+
+#### 解决方案 3：使用本地开发版本
+
+如果您在本地开发此项目，可以直接使用项目路径：
+
+```json
+{
+  "mcpServers": {
+    "zentao-11-3": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": ["D:/develop/code/mcp-zentao/mcp-zentao-11.3/dist/index.js"],
+      "env": {
+        "ZENTAO_URL": "http://your-zentao-url/zentao",
+        "ZENTAO_USERNAME": "your-username",
+        "ZENTAO_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+> **提示**：配置修改后需要重启 Cursor IDE 才能生效。
+
 ## 📦 安装
 
 ### 方法 1：本地安装

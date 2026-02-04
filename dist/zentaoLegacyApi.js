@@ -78,13 +78,45 @@ export class ZentaoLegacyAPI {
         return this.sessionId;
     }
     /**
-     * 发起请求
+     * 强制重新登录（清除sessionId后重新登录）
      */
-    async request(url, params) {
+    async forceReLogin() {
+        this.sessionId = null;
+        await this.login();
+        if (!this.sessionId) {
+            throw new Error('重新登录失败：未能获取sessionId');
+        }
+        return this.sessionId;
+    }
+    /**
+     * 检测响应是否为会话过期（重定向到登录页面）
+     */
+    isSessionExpired(responseData) {
+        if (typeof responseData === 'string') {
+            // 检测HTML重定向到登录页面
+            return responseData.includes('user-login') ||
+                responseData.includes('self.location') ||
+                responseData.includes('<script>');
+        }
+        return false;
+    }
+    /**
+     * 发起请求（带自动重试）
+     */
+    async request(url, params, retried = false) {
         const sid = await this.ensureLoggedIn();
         try {
             const fullUrl = `${url}?zentaosid=${sid}`;
             const response = await this.client.get(fullUrl, { params });
+            // 检测会话过期
+            if (this.isSessionExpired(response.data)) {
+                if (!retried) {
+                    console.log('检测到会话过期，正在重新登录...');
+                    await this.forceReLogin();
+                    return this.request(url, params, true);
+                }
+                throw new Error('会话已过期，重新登录后仍然失败');
+            }
             if (response.data.status === 'success') {
                 return JSON.parse(response.data.data);
             }
@@ -103,9 +135,9 @@ export class ZentaoLegacyAPI {
         }
     }
     /**
-     * POST请求
+     * POST请求（带自动重试）
      */
-    async postRequest(url, data) {
+    async postRequest(url, data, retried = false) {
         const sid = await this.ensureLoggedIn();
         try {
             const fullUrl = `${url}?zentaosid=${sid}`;
@@ -116,6 +148,15 @@ export class ZentaoLegacyAPI {
                 });
             }
             const response = await this.client.post(fullUrl, params);
+            // 检测会话过期
+            if (this.isSessionExpired(response.data)) {
+                if (!retried) {
+                    console.log('检测到会话过期，正在重新登录...');
+                    await this.forceReLogin();
+                    return this.postRequest(url, data, true);
+                }
+                throw new Error('会话已过期，重新登录后仍然失败');
+            }
             if (response.data.status === 'success') {
                 return response.data.data ? JSON.parse(response.data.data) : response.data;
             }
