@@ -474,70 +474,88 @@ export class ZentaoLegacyAPI {
         let currentPage = 1;
         const pageSize = 100; // 每页获取100条
         let hasMore = true;
+        const seenStoryIds = new Set<number>();
 
         // 映射status参数到browseType
-        // 注意：禅道11.x的browseType只支持简单的值，不像RESTful API那样复杂
+        // 禅道11.3产品需求页实际使用的是 *story 后缀的 browseType：
+        // allstory / activestory / draftstory / changedstory / closedstory。
+        // 不带 story 后缀的 all/active/draft/changed/closed 在部分 11.3 环境会返回 0 条。
         let browseType: string;
         let param: number | string = 0;
+        const requestedStatus = status || 'active';
 
         if (moduleId) {
-            // 按模块浏览
+            // 按模块浏览时 browseType 只能是 byModule，状态需要在本地过滤。
             browseType = 'byModule';
             param = moduleId;
         } else {
-            browseType = 'unclosed'; // 默认获取未关闭的需求
-        if (status) {
-            switch (status) {
+            switch (requestedStatus) {
                 case 'all':
-                    browseType = 'unclosed'; // 11.x中all返回0条，所以用unclosed代替
+                    browseType = 'allstory';
                     break;
                 case 'active':
-                    browseType = 'unclosed'; // active也映射到unclosed
+                    browseType = 'activestory';
                     break;
                 case 'draft':
-                    browseType = 'unclosed'; // draft也映射到unclosed
+                    browseType = 'draftstory';
                     break;
                 case 'closed':
-                    browseType = 'unclosed'; // closed也映射到unclosed
+                    browseType = 'closedstory';
                     break;
                 case 'changed':
-                    browseType = 'unclosed'; // changed也映射到unclosed
+                    browseType = 'changedstory';
                     break;
                 default:
                     browseType = 'unclosed';
-                }
             }
         }
 
-        while (hasMore) {
-            // 构建URL：/product-browse-{productId}-{branch}-{browseType}-{param}-{orderBy}-{recTotal}-{recPerPage}-{pageID}.json
-            const url = `/product-browse-${productId}-0-${browseType}-${param}-id_desc-0-${pageSize}-${currentPage}.json`;
+        const fetchBrowseType = async (type: string, typeParam: number | string = param): Promise<void> => {
+            currentPage = 1;
+            hasMore = true;
 
-            const data = await this.request<any>(url);
-            const stories = data.stories || {};
-            const storiesArray = Object.values(stories);
+            while (hasMore) {
+                // 构建URL：/product-browse-{productId}-{branch}-{browseType}-{param}-{orderBy}-{recTotal}-{recPerPage}-{pageID}.json
+                const url = `/product-browse-${productId}-0-${type}-${typeParam}-id_desc-0-${pageSize}-${currentPage}.json`;
 
-            // 添加到结果数组
-            allStories.push(...storiesArray);
+                const data = await this.request<any>(url);
+                const stories = data.stories || {};
+                const storiesArray = Object.values(stories);
 
-            // 检查分页信息
-            if (data.pager) {
-                const { recTotal, recPerPage, pageID } = data.pager;
-                const totalPages = Math.ceil(recTotal / recPerPage);
+                // 添加到结果数组并按需求ID去重，避免 all 回退合并时重复
+                for (const rawStory of storiesArray) {
+                    const storyId = parseInt((rawStory as any).id);
+                    if (!Number.isNaN(storyId) && !seenStoryIds.has(storyId)) {
+                        seenStoryIds.add(storyId);
+                        allStories.push(rawStory);
+                    }
+                }
 
-                // 判断是否还有更多数据
-                hasMore = currentPage < totalPages && storiesArray.length > 0;
-            } else {
-                // 没有分页信息，说明没有更多数据
-                hasMore = false;
+                // 检查分页信息
+                if (data.pager) {
+                    const { recTotal, recPerPage } = data.pager;
+                    const totalPages = Math.ceil(recTotal / recPerPage);
+
+                    // 判断是否还有更多数据
+                    hasMore = currentPage < totalPages && storiesArray.length > 0;
+                } else {
+                    // 没有分页信息，说明没有更多数据
+                    hasMore = false;
+                }
+
+                currentPage++;
+
+                // 安全限制：最多获取100页，避免无限循环
+                if (currentPage > 100) {
+                    break;
+                }
             }
+        };
 
-            currentPage++;
-
-            // 安全限制：最多获取100页，避免无限循环
-            if (currentPage > 100) {
-                break;
-            }
+        if (!moduleId && requestedStatus === 'all') {
+            await fetchBrowseType('allstory', 0);
+        } else {
+            await fetchBrowseType(browseType, param);
         }
 
         // 映射为标准格式
@@ -552,6 +570,11 @@ export class ZentaoLegacyAPI {
             openedDate: story.openedDate,
             assignedTo: story.assignedTo,
             spec: story.spec || '',
+            module: story.module,
+            product: story.product,
+            closedBy: story.closedBy,
+            closedDate: story.closedDate,
+            closedReason: story.closedReason,
         }));
 
         // 如果同时指定了 moduleId 和 status，需要在本地进行状态过滤
@@ -599,6 +622,9 @@ export class ZentaoLegacyAPI {
             moduleName: moduleName,
             product: story.product,
             productName: product?.name,
+            closedBy: story.closedBy,
+            closedDate: story.closedDate,
+            closedReason: story.closedReason,
         };
     }
 

@@ -46,6 +46,9 @@ export interface Story {
     moduleName?: string;
     product?: string | number;
     productName?: string;
+    closedBy?: string;
+    closedDate?: string;
+    closedReason?: string;
 }
 
 export interface TaskUpdate {
