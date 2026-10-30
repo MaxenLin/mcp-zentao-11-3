@@ -34,7 +34,7 @@ export function runSetup(options: SetupOptions): boolean {
     const home = options.home ?? os.homedir();
     const dryRun = options.dryRun === true;
     const register = options.mcp !== false;
-    const bin = zentaoBin();
+    const launch = mcpLaunch();
     let ok = true;
 
     for (const host of options.hosts) {
@@ -43,8 +43,8 @@ export function runSetup(options: SetupOptions): boolean {
             continue;
         }
         const line = host === 'cursor'
-            ? installCursorMcp(home, bin, dryRun)
-            : registerHostMcp(host, bin, dryRun);
+            ? installCursorMcp(home, launch, dryRun)
+            : registerHostMcp(host, launch, dryRun);
         console.log(line);
         if ((line.startsWith('登记') && line.includes('失败')) || line.includes('没有改动')) {
             ok = false;
@@ -71,7 +71,12 @@ function installSkill(home: string, host: SetupHost, source: string, dryRun: boo
     return `${dryRun ? '将安装' : '已安装'} skill ${dest}`;
 }
 
-function installCursorMcp(home: string, bin: string, dryRun: boolean): string {
+interface McpLaunch {
+    command: string;
+    args: string[];
+}
+
+function installCursorMcp(home: string, launch: McpLaunch, dryRun: boolean): string {
     const file = path.join(home, '.cursor', 'mcp.json');
     let data: Record<string, unknown> = {};
     if (fs.existsSync(file)) {
@@ -93,7 +98,7 @@ function installCursorMcp(home: string, bin: string, dryRun: boolean): string {
     if (servers.zentao) {
         return `已有 Cursor MCP zentao，跳过 ${file}`;
     }
-    servers.zentao = { command: bin, args: ['mcp'] };
+    servers.zentao = { command: launch.command, args: launch.args };
     data.mcpServers = servers;
     if (!dryRun) {
         fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -103,22 +108,21 @@ function installCursorMcp(home: string, bin: string, dryRun: boolean): string {
     return `${dryRun ? '将写入' : '已写入'} ${file}`;
 }
 
-function registerHostMcp(host: Exclude<SetupHost, 'cursor'>, bin: string, dryRun: boolean): string {
-    const command = host;
-    const args = host === 'claude'
-        ? ['mcp', 'add', '--scope', 'user', 'zentao', '--', bin, 'mcp']
-        : host === 'grok'
-            ? ['mcp', 'add', '--scope', 'user', 'zentao', '--', bin, 'mcp']
-            : ['mcp', 'add', 'zentao', '--', bin, 'mcp'];
-    const shown = `${command} ${args.join(' ')}`;
-    if (!commandExists(command)) {
-        return `未找到 ${command}。skill 已安装，MCP 可稍后手动执行: ${shown}`;
+function registerHostMcp(host: Exclude<SetupHost, 'cursor'>, launch: McpLaunch, dryRun: boolean): string {
+    const tail = [launch.command, ...launch.args];
+    const args = host === 'codex'
+        ? ['mcp', 'add', 'zentao', '--', ...tail]
+        : ['mcp', 'add', '--scope', 'user', 'zentao', '--', ...tail];
+    const executable = findOnPath(host);
+    const shown = `${host} ${args.join(' ')}`;
+    if (!executable) {
+        return `未找到 ${host}。skill 已安装，MCP 可稍后手动执行: ${shown}`;
     }
     if (dryRun) {
-        return `将执行 ${shown}`;
+        return `将执行 ${executable} ${args.join(' ')}`;
     }
     try {
-        execFileSync(command, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
+        runFile(executable, args);
         return `已登记 ${host} MCP`;
     } catch (error) {
         const stderr = error instanceof Error && 'stderr' in error
@@ -132,26 +136,76 @@ function registerHostMcp(host: Exclude<SetupHost, 'cursor'>, bin: string, dryRun
     }
 }
 
-function zentaoBin(): string {
-    return commandPath('zentao') ?? 'zentao';
+/**
+ * Windows 上 npm 的命令是 zentao.cmd。Cursor 直接启动 .cmd 会失败，所以改用当前 node 运行 index.js。
+ */
+function mcpLaunch(): McpLaunch {
+    if (process.platform === 'win32') {
+        const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'index.js');
+        return { command: process.execPath, args: [script, 'mcp'] };
+    }
+    return { command: findOnPath('zentao') ?? 'zentao', args: ['mcp'] };
 }
 
-function commandExists(command: string): boolean {
-    return commandPath(command) !== undefined;
+/**
+ * Node 从 18.20 / 20.12 起禁止直接 spawn .cmd，否则 EINVAL。交给 cmd.exe，并自己转义参数。
+ */
+function runFile(file: string, args: string[]): void {
+    if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(file)) {
+        execFileSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', windowsCommandLine(file, args)], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            encoding: 'utf8',
+            windowsHide: true,
+        });
+        return;
+    }
+    execFileSync(file, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8',
+        windowsHide: true,
+    });
 }
 
-function commandPath(command: string): string | undefined {
-    const dirs = (process.env.PATH || '').split(path.delimiter);
+/** cmd.exe /s /c 会剥掉整行最外层引号。% 即使在引号里也会展开。 */
+export function windowsCommandLine(file: string, args: string[]): string {
+    return `"${[file, ...args].map(quoteCmdArg).join(' ')}"`;
+}
+
+function quoteCmdArg(value: string): string {
+    const escaped = value.replace(/%/g, '%%');
+    if (escaped.length === 0) {
+        return '""';
+    }
+    if (!/[\s"&|<>^]/.test(escaped)) {
+        return escaped;
+    }
+    return `"${escaped.replace(/"/g, '""')}"`;
+}
+
+export function findOnPath(
+    command: string,
+    platform: NodeJS.Platform = process.platform,
+    env: NodeJS.ProcessEnv = process.env
+): string | undefined {
+    const dirs = (env.PATH || '').split(path.delimiter).filter(Boolean);
+    // Windows 按 PATHEXT 找 claude.cmd / claude.exe。不带后缀的文件通常不存在。
+    const suffixes = platform === 'win32' && path.win32.extname(command) === ''
+        ? (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+        : [''];
     for (const dir of dirs) {
-        if (!dir) {
-            continue;
-        }
-        const full = path.join(dir, command);
-        try {
-            fs.accessSync(full, fs.constants.X_OK);
-            return full;
-        } catch {
-            // 继续找下一个目录
+        for (const suffix of suffixes) {
+            const full = path.join(dir, suffix ? command + suffix : command);
+            try {
+                if (!fs.statSync(full).isFile()) {
+                    continue;
+                }
+                if (platform !== 'win32') {
+                    fs.accessSync(full, fs.constants.X_OK);
+                }
+                return full;
+            } catch {
+                // 继续找下一个候选
+            }
         }
     }
     return undefined;

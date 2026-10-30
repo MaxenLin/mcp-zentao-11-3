@@ -9,3 +9,6 @@ export interface SetupOptions {
     home?: string;
 }
 export declare function runSetup(options: SetupOptions): boolean;
+/** cmd.exe /s /c 会剥掉整行最外层引号。% 即使在引号里也会展开。 */
+export declare function windowsCommandLine(file: string, args: string[]): string;
+export declare function findOnPath(command: string, platform?: NodeJS.Platform, env?: NodeJS.ProcessEnv): string | undefined;
