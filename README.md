@@ -1,13 +1,14 @@
 # @maxenlin/mcp-zentao-11-3
 
-禅道 11.3 Legacy 版 MCP 服务器，支持所有兼容 MCP 协议的 IDE 和工具（如 Cursor IDE、Claude Desktop、Continue 等），只支持旧版 Session API。
+禅道 11.3 Legacy 版 MCP 服务器，同时提供 `zentao` 命令行。支持 Cursor、Claude、Grok、Codex 等工具，只支持旧版 Session API。
 
 ## ✨ 特性
 
 - ✅ **纯 Legacy API** - 只支持禅道 11.x 版本的 Session API
-- ✅ **功能完整** - 支持任务、Bug、需求、测试用例等完整功能
+- ✅ **命令行和 MCP** - 全局安装后用 `zentao` 查询和修改；同一个程序也是 MCP 服务
+- ✅ **读写** - 产品、项目、需求、任务、Bug、用例、版本、测试单
 - ✅ **AI 编程优化** - 提供完整开发上下文、格式化输出、智能摘要等功能
-- ✅ **开箱即用** - 配置简单，专注核心功能
+- ✅ **开箱即用** - `zentao config set` 写配置，`zentao setup` 安装 skill 并登记 MCP
 
 ## 📋 系统要求
 
@@ -102,11 +103,16 @@
 
 ## 📦 安装
 
-### 方法 1：本地安装
+需要 Node.js 18 或更高版本。
+
+### 方法 1：全局安装
 
 ```bash
 npm install -g @maxenlin/mcp-zentao-11-3
+zentao --help
 ```
+
+安装后可以直接用 `zentao`。`mcp-zentao-11-3` 是同一个程序。
 
 然后在支持 MCP 的 IDE/工具配置文件中添加（以 Cursor IDE 为例）：
 
@@ -114,7 +120,7 @@ npm install -g @maxenlin/mcp-zentao-11-3
 {
   "mcpServers": {
     "zentao-11-3": {
-      "command": "mcp-zentao-11-3",
+      "command": "zentao",
       "args": [],
       "env": {
         "ZENTAO_URL": "http://your-zentao-url/zentao",
@@ -131,9 +137,17 @@ npm install -g @maxenlin/mcp-zentao-11-3
 - `ZENTAO_USERNAME`: 禅道用户名
 - `ZENTAO_PASSWORD`: 禅道密码
 
+终端里找不到 `zentao` 时，把 `npm config get prefix` 打印出来的目录下的 `bin` 加进 PATH。Windows 上 npm 会同时生成 `zentao.cmd`。
+
 > **提示**：工作空间路径会自动检测，批量导出功能会将文件保存到当前项目工作空间的 `export/` 目录。
 
 ### 方法 2：使用 npx
+
+包里有 `zentao` 和 `mcp-zentao-11-3` 两个命令，npx 必须写明要跑哪一个。
+
+```bash
+npx --package @maxenlin/mcp-zentao-11-3 zentao --help
+```
 
 在支持 MCP 的 IDE/工具配置文件中添加（以 Cursor IDE 为例）：
 
@@ -142,7 +156,7 @@ npm install -g @maxenlin/mcp-zentao-11-3
   "mcpServers": {
     "zentao-11-3": {
       "command": "npx",
-      "args": ["-y", "@maxenlin/mcp-zentao-11-3"],
+      "args": ["-y", "--package", "@maxenlin/mcp-zentao-11-3", "zentao"],
       "env": {
         "ZENTAO_URL": "http://your-zentao-url/zentao",
         "ZENTAO_USERNAME": "your-username",
@@ -159,6 +173,72 @@ npm install -g @maxenlin/mcp-zentao-11-3
 - `ZENTAO_PASSWORD`: 禅道密码
 
 > **提示**：工作空间路径会自动检测，批量导出功能会将文件保存到当前项目工作空间的 `export/` 目录。
+
+## 命令行
+
+全局安装之后，在终端里直接运行 `zentao`。不带参数会显示帮助。Cursor 等客户端不带参数、并用管道启动时，仍然是 MCP 服务。
+
+```bash
+# 写入 ~/.zentao/config.json（权限 600）
+zentao config set \
+  --url http://your-zentao-url/zentao \
+  --username your-username \
+  --password your-password
+
+# 环境变量优先于配置文件
+export ZENTAO_URL=http://your-zentao-url/zentao
+export ZENTAO_USERNAME=your-username
+export ZENTAO_PASSWORD=your-password
+
+zentao ping
+zentao products
+zentao stories
+zentao stories --product 230
+zentao story 2508
+zentao bug 20692
+zentao search 接福 --product 230 --status all
+
+zentao project create --name 迭代一 --code sprint1 --begin 2026-10-28 --end 2026-11-04 --product 1
+zentao task create --project 1 --name 实现登录
+zentao bug create --product 1 --title 登录失败
+zentao story create --product 1 --title 支持扫码登录
+```
+
+加 `--json` 输出原始 JSON。`--limit 0` 表示列表不截断，默认最多显示 100 条。
+
+项目、任务、Bug、需求、版本、测试单都可以在命令行里创建和删除。`project delete` 不会删掉项目下的任务。完整子命令见 `zentao --help`。
+
+需求列表和搜索默认只包含激活需求。要查全部状态，加上 `--status all`。
+
+本机改源码时用 `npm install && npm run build && npm link`，改完再 `npm run build`。这只给开发用，别人不需要。
+
+## Skill 和插件
+
+全局安装之后，一条命令给 Grok Build、Claude Code、Codex、Cursor 装上同一份 skill，并登记 MCP。skill 告诉助手用 `zentao` 命令；MCP 仍是这个程序的 `zentao mcp`。
+
+```bash
+zentao config set --url http://your-zentao-url/zentao --username your-username --password your-password
+zentao setup
+zentao setup claude codex
+zentao setup --dry-run
+```
+
+| 工具 | skill | MCP |
+|---|---|---|
+| Grok Build | `~/.grok/skills/zentao/SKILL.md` | `grok mcp add --scope user zentao -- zentao mcp` |
+| Claude Code | `~/.claude/skills/zentao/SKILL.md` | `claude mcp add --scope user zentao -- zentao mcp` |
+| Codex | `~/.agents/skills/zentao/SKILL.md` | `codex mcp add zentao -- zentao mcp` |
+| Cursor | `~/.cursor/skills/zentao/SKILL.md` | `~/.cursor/mcp.json` |
+
+装好后重新打开对应工具。Grok 里是 `/zentao`，Claude Code 里是 `/zentao`，Codex 里用 `$zentao`。
+
+也可以把仓库里的 `plugin/` 当插件装。它带同一份 skill 和 `.mcp.json`，Grok 与 Claude Code 都能读：
+
+```bash
+grok plugin install /path/to/mcp-zentao-11-3/plugin --trust
+```
+
+全局安装后的插件目录在 `npm root -g` 下面的 `@maxenlin/mcp-zentao-11-3/plugin`。`zentao setup` 和插件安装二选一，否则 skill 会装两份。
 
 ## 🚀 使用
 
@@ -237,19 +317,38 @@ npm install -g @maxenlin/mcp-zentao-11-3
 - `initZentao` - 初始化禅道连接
 - `getConfig` - 查看配置信息
 
+### 项目管理
+
+- `getProjects` - 获取项目列表
+- `getProject` - 获取项目详情
+- `createProject` - 创建项目。结束日期必须晚于开始日期，并且要关联产品
+- `deleteProject` - 删除项目。不会删除项目下的任务
+- `getProjectTasks` - 获取项目里的任务
+- `getProjectBuilds` - 获取项目里的版本
+
 ### 任务管理
 
 - `getMyTasks` - 获取我的任务列表
 - `getTaskDetail` - 获取任务详情
+- `createTask` - 创建任务。需要项目编号
+- `startTask` - 开始任务
+- `closeTask` - 关闭任务
+- `assignTask` - 指派任务
 - `updateTask` - 更新任务
 - `finishTask` - 完成任务
+- `deleteTask` - 删除任务
 
 ### Bug 管理
 
 - `getMyBugs` - 获取我的Bug列表
 - `getBugDetail` - 获取Bug详情
 - `getProductBugs` - 获取产品的Bug列表（支持按模块和状态筛选）
+- `createBug` - 创建 Bug
 - `resolveBug` - 解决Bug
+- `closeBug` - 关闭 Bug
+- `activateBug` - 激活 Bug
+- `assignBug` - 指派 Bug
+- `deleteBug` - 删除 Bug
 
 ### 产品管理
 
@@ -261,6 +360,11 @@ npm install -g @maxenlin/mcp-zentao-11-3
 - `getStoryDetail` - 获取需求详情
 - `searchStories` - 搜索需求
 - `searchStoriesByProductName` - 按产品名称搜索需求
+- `createStory` - 创建需求。默认不进评审，直接激活
+- `changeStory` - 变更需求。激活需求变更后状态变为 changed
+- `closeStory` - 关闭需求
+- `activateStory` - 激活需求
+- `deleteStory` - 删除需求
 
 ### 测试用例管理
 
@@ -268,13 +372,19 @@ npm install -g @maxenlin/mcp-zentao-11-3
 - `getTestCaseDetail` - 获取测试用例详情
 - `createTestCase` - 创建测试用例
 - `getStoryTestCases` - 获取需求的测试用例
+- `deleteTestCase` - 删除测试用例
 
-### 测试单管理
+### 版本和测试单
 
+- `createBuild` - 创建版本
+- `deleteBuild` - 删除版本
 - `getTestTasks` - 获取测试单列表
 - `getTestTaskDetail` - 获取测试单详情
 - `getTestTaskResults` - 获取测试单的测试结果
-- `runTestCase` - 执行测试用例
+- `createTestTask` - 创建测试单
+- `linkTestCase` - 把用例关联到测试单
+- `deleteTestTask` - 删除测试单
+- `runTestCase` - 执行测试用例。`taskId` 是测试执行记录 id（`getTestTaskResults` 返回的 id），不是测试单 id
 
 ### 关联关系查询
 
@@ -309,11 +419,6 @@ npm install -g @maxenlin/mcp-zentao-11-3
 - `generateCodePromptFromStory` - 根据需求生成代码框架提示
 - `generateTestPromptFromBug` - 根据 Bug 生成测试用例提示
 - `generateCodeReviewChecklist` - 生成代码审查检查清单
-
-### 根据需求/Bug创建任务
-
-- `createTaskFromStory` - 根据需求创建任务（提供手动操作指南）
-- `createTaskFromBug` - 根据Bug创建修复任务（提供手动操作指南）
 
 ### 数据导出
 

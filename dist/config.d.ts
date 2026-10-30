@@ -5,5 +5,6 @@ export interface ZentaoConfig {
     apiVersion: 'legacy';
 }
 export declare function saveConfig(config: ZentaoConfig): void;
+export declare function getConfigFilePath(): string;
+export declare function loadFileConfig(): ZentaoConfig | null;
 export declare function loadConfig(): ZentaoConfig | null;
-export declare function isConfigured(): boolean;

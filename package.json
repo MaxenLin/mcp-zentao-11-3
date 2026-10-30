@@ -1,15 +1,19 @@
 {
   "name": "@maxenlin/mcp-zentao-11-3",
-  "version": "1.0.5",
-  "description": "Zentao 11.3 legacy 版 MCP 服务器，只支持旧版 Session API，纯净无 REST v1",
+  "version": "1.1.0",
+  "description": "Zentao 11.3 legacy 版 MCP 服务器，附带命令行。只支持旧版 Session API",
   "main": "dist/index.js",
   "type": "module",
   "types": "dist/index.d.ts",
   "bin": {
+    "zentao": "dist/index.js",
     "mcp-zentao-11-3": "dist/index.js"
   },
   "files": [
     "dist",
+    "plugin",
+    "plugin/.claude-plugin",
+    "plugin/.mcp.json",
     "README.md",
     "LICENSE"
   ],

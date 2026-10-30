@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { ZentaoLegacyAPI } from './zentaoLegacyApi.js';
 import { loadConfig } from './config.js';
+import { runCli, shouldRunCli } from './cli.js';
 import { downloadImages, buildImageContent, saveImagesToDisk } from './utils/imageDownloader.js';
 import { ZentaoError, ErrorCode, createError } from './errors.js';
 import { formatStoryAsMarkdown, formatBugAsMarkdown, formatTaskAsMarkdown, generateStorySummary, generateBugSummary } from './utils/formatter.js';
@@ -208,11 +209,11 @@ function formatModuleItemsAsMarkdown(result) {
             markdown += `**状态**: ${item.status}\n`;
         }
         if (item.pri !== undefined) {
-            const priLabels = ['', '低', '中', '高', '紧急'];
+            const priLabels = ['', '紧急', '高', '中', '低'];
             markdown += `**优先级**: ${priLabels[item.pri] || item.pri}\n`;
         }
         if (item.severity !== undefined) {
-            const severityLabels = ['', '轻微', '一般', '严重', '致命'];
+            const severityLabels = ['', '致命', '严重', '一般', '轻微'];
             markdown += `**严重程度**: ${severityLabels[item.severity] || item.severity}\n`;
         }
         if (item.stage) {
@@ -231,7 +232,8 @@ function formatModuleItemsAsMarkdown(result) {
             markdown += `**指派给**: ${item.assignedTo}\n`;
         }
         if (item.steps) {
-            markdown += `\n**复现步骤**:\n\n${item.steps}\n\n`;
+            const stepLabel = type === 'testcase' ? '测试步骤' : '复现步骤';
+            markdown += `\n**${stepLabel}**:\n\n${item.steps}\n\n`;
         }
         if (item.spec && item.spec.trim()) {
             markdown += `\n**描述**:\n\n${item.spec}\n\n`;
@@ -239,99 +241,14 @@ function formatModuleItemsAsMarkdown(result) {
         if (item.precondition) {
             markdown += `\n**前置条件**:\n\n${item.precondition}\n\n`;
         }
-        if (item.steps && type === 'testcase') {
-            markdown += `\n**测试步骤**:\n\n${item.steps}\n\n`;
-        }
         markdown += `---\n\n`;
-    });
-    return markdown;
-}
-/**
- * 将多模块数据转换为 Markdown 格式（合并到一个文件，按模块分组显示）
- */
-function formatMultiModuleItemsAsMarkdown(result) {
-    const { type, productId, items, count, moduleGroups, searchConditions } = result;
-    let markdown = `# ${type === 'story' ? '需求' : type === 'bug' ? 'Bug' : '测试用例'}列表（多模块合并）\n\n`;
-    if (productId) {
-        markdown += `**产品ID**: ${productId}\n`;
-    }
-    markdown += `**模块数量**: ${moduleGroups?.length || 0}\n`;
-    markdown += `**总数量**: ${count}\n`;
-    markdown += `**导出时间**: ${new Date().toLocaleString('zh-CN')}\n`;
-    if (searchConditions) {
-        if (searchConditions.startDate || searchConditions.endDate) {
-            markdown += `**日期范围**: ${searchConditions.startDate || '不限'} 至 ${searchConditions.endDate || '不限'}\n`;
-        }
-        if (searchConditions.keyword) {
-            markdown += `**搜索关键字**: ${searchConditions.keyword}\n`;
-        }
-    }
-    markdown += `\n---\n\n`;
-    if (!moduleGroups || moduleGroups.length === 0) {
-        markdown += `暂无数据。\n`;
-        return markdown;
-    }
-    // 按模块分组显示
-    moduleGroups.forEach((moduleGroup, moduleIndex) => {
-        const { moduleId, moduleName, items: moduleItems } = moduleGroup;
-        markdown += `## 模块 ${moduleIndex + 1}: ${moduleName || `模块ID ${moduleId}`} (${moduleItems.length} 条)\n\n`;
-        markdown += `**模块ID**: ${moduleId}\n`;
-        if (moduleName) {
-            markdown += `**模块名称**: ${moduleName}\n`;
-        }
-        markdown += `**数量**: ${moduleItems.length}\n\n`;
-        markdown += `---\n\n`;
-        moduleItems.forEach((item, itemIndex) => {
-            markdown += `### ${itemIndex + 1}. ${item.title || `#${item.id}`}\n\n`;
-            markdown += `**ID**: ${item.id}\n`;
-            if (item.status) {
-                markdown += `**状态**: ${item.status}\n`;
-            }
-            if (item.pri !== undefined) {
-                const priLabels = ['', '低', '中', '高', '紧急'];
-                markdown += `**优先级**: ${priLabels[item.pri] || item.pri}\n`;
-            }
-            if (item.severity !== undefined) {
-                const severityLabels = ['', '轻微', '一般', '严重', '致命'];
-                markdown += `**严重程度**: ${severityLabels[item.severity] || item.severity}\n`;
-            }
-            if (item.stage) {
-                markdown += `**阶段**: ${item.stage}\n`;
-            }
-            if (item.estimate !== undefined && item.estimate > 0) {
-                markdown += `**预估工时**: ${item.estimate} 小时\n`;
-            }
-            if (item.openedBy) {
-                markdown += `**创建人**: ${item.openedBy}\n`;
-            }
-            if (item.openedDate) {
-                markdown += `**创建时间**: ${item.openedDate}\n`;
-            }
-            if (item.assignedTo) {
-                markdown += `**指派给**: ${item.assignedTo}\n`;
-            }
-            if (item.steps) {
-                markdown += `\n**复现步骤**:\n\n${item.steps}\n\n`;
-            }
-            if (item.spec && item.spec.trim()) {
-                markdown += `\n**描述**:\n\n${item.spec}\n\n`;
-            }
-            if (item.precondition) {
-                markdown += `\n**前置条件**:\n\n${item.precondition}\n\n`;
-            }
-            if (item.steps && type === 'testcase') {
-                markdown += `\n**测试步骤**:\n\n${item.steps}\n\n`;
-            }
-            markdown += `---\n\n`;
-        });
-        markdown += `\n`;
     });
     return markdown;
 }
 // Create an MCP server
 const server = new McpServer({
     name: "Zentao 11.3 Legacy API",
-    version: "1.0.0"
+    version: "1.1.0"
 });
 // Initialize ZentaoAPI instance (只支持 legacy)
 let zentaoApi = null;
@@ -371,6 +288,23 @@ async function ensureInitialized() {
     }
     zentaoApi = new ZentaoLegacyAPI(config);
 }
+function textResult(value) {
+    return {
+        content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }]
+    };
+}
+async function runTool(label, action) {
+    await ensureInitialized();
+    try {
+        return textResult(await action());
+    }
+    catch (error) {
+        if (error instanceof ZentaoError) {
+            throw error;
+        }
+        throw createError(ErrorCode.API_ERROR, `${label}: ${error instanceof Error ? error.message : String(error)}`, undefined, error);
+    }
+}
 // 在服务器启动时初始化工作空间路径（从环境变量读取）
 // Cursor IDE 会在启动 MCP 服务器时通过环境变量传递工作空间路径
 const initWorkspaceFolder = () => {
@@ -391,8 +325,12 @@ server.tool("initZentao", {}, async ({}) => {
     if (!config) {
         throw createError(ErrorCode.CONFIG_ERROR, "No configuration found. Please provide complete Zentao configuration.");
     }
+    const safeConfig = {
+        ...config,
+        password: '***'
+    };
     return {
-        content: [{ type: "text", text: JSON.stringify(config, null, 2) }]
+        content: [{ type: "text", text: JSON.stringify(safeConfig, null, 2) }]
     };
 });
 // Add getConfig tool
@@ -490,16 +428,13 @@ server.tool("getMyBugs", {
 }, async ({ status, productId }) => {
     await ensureInitialized();
     try {
-        // Legacy API 的 getMyBugs 不接受参数，返回所有Bug
-        const bugs = await zentaoApi.getMyBugs();
-        // 如果需要过滤，在本地过滤
+        // 指定产品时走产品 Bug 列表。我的 Bug 接口没有产品字段，之前传了 productId 也不会过滤。
+        const bugs = productId
+            ? await zentaoApi.getProductBugs(productId, status)
+            : await zentaoApi.getMyBugs();
         let filteredBugs = bugs;
-        if (status && status !== 'all') {
+        if (!productId && status && status !== 'all') {
             filteredBugs = bugs.filter(bug => bug.status === status);
-        }
-        if (productId) {
-            // 注意：Legacy API 返回的 Bug 可能没有 productId 字段，需要从详情获取
-            // 这里先简单返回所有，如果需要按产品过滤，需要调用 getBugDetail
         }
         return {
             content: [{ type: "text", text: JSON.stringify(filteredBugs, null, 2) }]
@@ -2156,7 +2091,7 @@ server.tool("getTestTaskResults", {
 });
 // Add runTestCase tool
 server.tool("runTestCase", {
-    taskId: z.number(),
+    taskId: z.number().describe("测试执行记录 ID（testtask-cases 返回的 id），不是测试单 ID"),
     testRun: z.object({
         caseId: z.number(),
         version: z.number().optional(),
@@ -2803,125 +2738,126 @@ server.tool("getNextActionSuggestions", {
         throw createError(ErrorCode.API_ERROR, `获取操作建议失败: ${error instanceof Error ? error.message : String(error)}`, undefined, error);
     }
 });
-// ==================== 根据需求/Bug创建任务 ====================
-// Add createTaskFromStory tool - 根据需求创建任务
-server.tool("createTaskFromStory", {
+server.tool("getProjects", {}, async () => runTool("获取项目列表失败", () => zentaoApi.getProjects()));
+server.tool("getProject", { projectId: z.number() }, async ({ projectId }) => runTool(`获取项目 ${projectId} 失败`, () => zentaoApi.getProject(projectId)));
+server.tool("createProject", {
+    name: z.string(),
+    code: z.string(),
+    begin: z.string(),
+    end: z.string(),
+    products: z.array(z.number()),
+    days: z.number().optional(),
+    type: z.enum(["sprint", "waterfall", "ops"]).optional(),
+    acl: z.string().optional(),
+    desc: z.string().optional(),
+    team: z.string().optional()
+}, async (input) => runTool("创建项目失败", () => zentaoApi.createProject(input)));
+server.tool("deleteProject", { projectId: z.number() }, async ({ projectId }) => runTool(`删除项目 ${projectId} 失败`, async () => {
+    await zentaoApi.deleteProject(projectId);
+    return { ok: true, projectId };
+}));
+server.tool("getProjectTasks", { projectId: z.number() }, async ({ projectId }) => runTool(`获取项目 ${projectId} 的任务失败`, () => zentaoApi.getProjectTasks(projectId)));
+server.tool("createTask", {
+    project: z.number(),
+    name: z.string(),
+    type: z.string().optional(),
+    assignedTo: z.string().optional(),
+    estimate: z.number().optional(),
+    pri: z.number().optional(),
+    desc: z.string().optional(),
+    estStarted: z.string().optional(),
+    deadline: z.string().optional(),
+    story: z.number().optional()
+}, async (input) => runTool("创建任务失败", () => zentaoApi.createTask(input)));
+server.tool("startTask", { taskId: z.number(), consumed: z.number().optional(), left: z.number().optional() }, async ({ taskId, consumed, left }) => runTool(`开始任务 ${taskId} 失败`, () => zentaoApi.startTask(taskId, { consumed, left })));
+server.tool("closeTask", { taskId: z.number(), comment: z.string().optional() }, async ({ taskId, comment }) => runTool(`关闭任务 ${taskId} 失败`, () => zentaoApi.closeTask(taskId, comment)));
+server.tool("assignTask", { taskId: z.number(), assignedTo: z.string(), left: z.number().optional(), comment: z.string().optional() }, async ({ taskId, assignedTo, left, comment }) => runTool(`指派任务 ${taskId} 失败`, () => zentaoApi.assignTask(taskId, assignedTo, { left, comment })));
+server.tool("deleteTask", { taskId: z.number() }, async ({ taskId }) => runTool(`删除任务 ${taskId} 失败`, async () => {
+    await zentaoApi.deleteTask(taskId);
+    return { ok: true, taskId };
+}));
+server.tool("createBug", {
+    product: z.number(),
+    title: z.string(),
+    openedBuild: z.string().optional(),
+    severity: z.number().optional(),
+    pri: z.number().optional(),
+    type: z.string().optional(),
+    steps: z.string().optional(),
+    story: z.number().optional(),
+    assignedTo: z.string().optional()
+}, async (input) => runTool("创建 Bug 失败", () => zentaoApi.createBug(input)));
+server.tool("closeBug", { bugId: z.number(), comment: z.string().optional() }, async ({ bugId, comment }) => runTool(`关闭 Bug ${bugId} 失败`, () => zentaoApi.closeBug(bugId, comment)));
+server.tool("activateBug", { bugId: z.number(), assignedTo: z.string().optional(), comment: z.string().optional() }, async ({ bugId, assignedTo, comment }) => runTool(`激活 Bug ${bugId} 失败`, () => zentaoApi.activateBug(bugId, { assignedTo, comment })));
+server.tool("assignBug", { bugId: z.number(), assignedTo: z.string(), comment: z.string().optional() }, async ({ bugId, assignedTo, comment }) => runTool(`指派 Bug ${bugId} 失败`, () => zentaoApi.assignBug(bugId, assignedTo, comment)));
+server.tool("deleteBug", { bugId: z.number() }, async ({ bugId }) => runTool(`删除 Bug ${bugId} 失败`, async () => {
+    await zentaoApi.deleteBug(bugId);
+    return { ok: true, bugId };
+}));
+server.tool("createStory", {
+    product: z.number(),
+    title: z.string(),
+    spec: z.string().optional(),
+    verify: z.string().optional(),
+    pri: z.number().optional(),
+    estimate: z.number().optional(),
+    assignedTo: z.string().optional(),
+    source: z.string().optional(),
+    needNotReview: z.boolean().optional()
+}, async (input) => runTool("创建需求失败", () => zentaoApi.createStory(input)));
+server.tool("changeStory", {
     storyId: z.number(),
-    taskName: z.string(),
-    estimate: z.number().optional(),
+    title: z.string().optional(),
+    spec: z.string().optional(),
+    verify: z.string().optional(),
     assignedTo: z.string().optional(),
+    comment: z.string().optional()
+}, async ({ storyId, ...input }) => runTool(`变更需求 ${storyId} 失败`, () => zentaoApi.changeStory(storyId, input)));
+server.tool("closeStory", { storyId: z.number(), closedReason: z.string(), comment: z.string().optional() }, async ({ storyId, closedReason, comment }) => runTool(`关闭需求 ${storyId} 失败`, () => zentaoApi.closeStory(storyId, closedReason, comment)));
+server.tool("activateStory", { storyId: z.number(), assignedTo: z.string().optional(), comment: z.string().optional() }, async ({ storyId, assignedTo, comment }) => runTool(`激活需求 ${storyId} 失败`, () => zentaoApi.activateStory(storyId, { assignedTo, comment })));
+server.tool("deleteStory", { storyId: z.number() }, async ({ storyId }) => runTool(`删除需求 ${storyId} 失败`, async () => {
+    await zentaoApi.deleteStory(storyId);
+    return { ok: true, storyId };
+}));
+server.tool("getProjectBuilds", { projectId: z.number() }, async ({ projectId }) => runTool(`获取项目 ${projectId} 的版本失败`, () => zentaoApi.getProjectBuilds(projectId)));
+server.tool("createBuild", {
+    project: z.number(),
+    product: z.number(),
+    name: z.string(),
+    builder: z.string().optional(),
+    date: z.string().optional(),
     desc: z.string().optional()
-}, async ({ storyId, taskName, estimate, assignedTo, desc }) => {
-    await ensureInitialized();
-    try {
-        // 获取需求详情
-        const story = await zentaoApi.getStoryDetail(storyId);
-        // 注意：禅道11.x Legacy API可能不支持直接通过API创建任务
-        // 这里提供一个建议和需求信息的组合
-        const suggestion = {
-            message: "禅道11.x Legacy API可能不支持直接通过API创建任务",
-            suggestion: `请通过禅道Web界面为需求 #${storyId} 创建任务`,
-            storyInfo: {
-                id: story.id,
-                title: story.title,
-                product: story.productName,
-                status: story.status
-            },
-            taskInfo: {
-                name: taskName,
-                estimate: estimate,
-                assignedTo: assignedTo,
-                desc: desc || `基于需求 #${storyId}: ${story.title}`
-            },
-            manualSteps: [
-                `1. 访问禅道Web界面`,
-                `2. 打开需求 #${storyId}: ${story.title}`,
-                `3. 在需求详情页创建任务`,
-                `4. 任务名称: ${taskName}`,
-                estimate ? `5. 预估工时: ${estimate} 小时` : '',
-                assignedTo ? `6. 指派给: ${assignedTo}` : ''
-            ].filter(Boolean)
-        };
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify({
-                        success: false,
-                        reason: "API不支持",
-                        ...suggestion
-                    }, null, 2)
-                }]
-        };
-    }
-    catch (error) {
-        if (error instanceof ZentaoError) {
-            throw error;
-        }
-        throw createError(ErrorCode.API_ERROR, `根据需求创建任务失败: ${error instanceof Error ? error.message : String(error)}`, undefined, error);
-    }
-});
-// Add createTaskFromBug tool - 根据Bug创建修复任务
-server.tool("createTaskFromBug", {
-    bugId: z.number(),
-    taskName: z.string().optional(),
-    estimate: z.number().optional(),
-    assignedTo: z.string().optional(),
+}, async (input) => runTool("创建版本失败", () => zentaoApi.createBuild(input)));
+server.tool("deleteBuild", { buildId: z.number() }, async ({ buildId }) => runTool(`删除版本 ${buildId} 失败`, async () => {
+    await zentaoApi.deleteBuild(buildId);
+    return { ok: true, buildId };
+}));
+server.tool("createTestTask", {
+    product: z.number(),
+    project: z.number(),
+    build: z.number(),
+    name: z.string(),
+    begin: z.string(),
+    end: z.string(),
+    owner: z.string().optional(),
     desc: z.string().optional()
-}, async ({ bugId, taskName, estimate, assignedTo, desc }) => {
-    await ensureInitialized();
-    try {
-        // 获取Bug详情
-        const bug = await zentaoApi.getBugDetail(bugId);
-        const relatedStory = await zentaoApi.getBugRelatedStory(bugId);
-        const defaultTaskName = taskName || `修复Bug #${bugId}: ${bug.title}`;
-        // 注意：禅道11.x Legacy API可能不支持直接通过API创建任务
-        const suggestion = {
-            message: "禅道11.x Legacy API可能不支持直接通过API创建任务",
-            suggestion: `请通过禅道Web界面为Bug #${bugId} 创建修复任务`,
-            bugInfo: {
-                id: bug.id,
-                title: bug.title,
-                status: bug.status,
-                severity: bug.severity,
-                product: bug.productName
-            },
-            relatedStory: relatedStory ? {
-                id: relatedStory.id,
-                title: relatedStory.title
-            } : null,
-            taskInfo: {
-                name: defaultTaskName,
-                estimate: estimate,
-                assignedTo: assignedTo,
-                desc: desc || `修复Bug #${bugId}: ${bug.title}\n\n复现步骤:\n${bug.steps || '无'}`
-            },
-            manualSteps: [
-                `1. 访问禅道Web界面`,
-                `2. 打开Bug #${bugId}: ${bug.title}`,
-                `3. 在Bug详情页创建修复任务`,
-                `4. 任务名称: ${defaultTaskName}`,
-                estimate ? `5. 预估工时: ${estimate} 小时` : '',
-                assignedTo ? `6. 指派给: ${assignedTo}` : ''
-            ].filter(Boolean)
-        };
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify({
-                        success: false,
-                        reason: "API不支持",
-                        ...suggestion
-                    }, null, 2)
-                }]
-        };
-    }
-    catch (error) {
-        if (error instanceof ZentaoError) {
-            throw error;
-        }
-        throw createError(ErrorCode.API_ERROR, `根据Bug创建任务失败: ${error instanceof Error ? error.message : String(error)}`, undefined, error);
-    }
-});
-// Start receiving messages on stdin and sending messages on stdout
+}, async (input) => runTool("创建测试单失败", () => zentaoApi.createTestTask(input)));
+server.tool("linkTestCase", { taskId: z.number(), caseId: z.number(), version: z.number().optional() }, async ({ taskId, caseId, version }) => runTool(`关联用例 ${caseId} 失败`, async () => {
+    await zentaoApi.linkTestCase(taskId, caseId, version);
+    return { ok: true, taskId, caseId };
+}));
+server.tool("deleteTestTask", { taskId: z.number() }, async ({ taskId }) => runTool(`删除测试单 ${taskId} 失败`, async () => {
+    await zentaoApi.deleteTestTask(taskId);
+    return { ok: true, taskId };
+}));
+server.tool("deleteTestCase", { caseId: z.number() }, async ({ caseId }) => runTool(`删除用例 ${caseId} 失败`, async () => {
+    await zentaoApi.deleteTestCase(caseId);
+    return { ok: true, caseId };
+}));
+// 终端里跑子命令走 CLI。Cursor 等客户端不带参数、且 stdin 不是终端时，仍启动 MCP。
+if (shouldRunCli(process.argv)) {
+    await runCli(process.argv);
+    process.exit(process.exitCode ?? 0);
+}
 const transport = new StdioServerTransport();
 await server.connect(transport).catch(console.error);

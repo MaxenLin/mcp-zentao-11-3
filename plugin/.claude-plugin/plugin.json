@@ -1,0 +1,13 @@
+{
+  "name": "zentao",
+  "displayName": "禅道",
+  "version": "1.1.0",
+  "description": "查询和更新禅道 11.3 的产品、需求、任务、Bug、用例和测试单。附带命令行。",
+  "author": {
+    "name": "maxenlin",
+    "url": "https://github.com/MaxenLin"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/MaxenLin/mcp-zentao-11-3",
+  "keywords": ["zentao", "禅道", "mcp"]
+}

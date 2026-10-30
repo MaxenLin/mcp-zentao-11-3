@@ -7,6 +7,8 @@ export interface Task {
     desc?: string;
     story?: number | string;
     product?: number | string;
+    project?: number;
+    assignedTo?: string;
 }
 export interface Bug {
     id: number;
@@ -18,6 +20,7 @@ export interface Bug {
     story?: number | string;
     product?: number | string;
     productName?: string;
+    assignedTo?: string;
 }
 export interface Product {
     id: number;
@@ -111,6 +114,96 @@ export interface CreateTestCaseRequest {
     precondition?: string;
     steps?: string;
     status?: string;
+}
+export interface Project {
+    id: number;
+    name: string;
+    code: string;
+    status: string;
+    begin?: string;
+    end?: string;
+    desc?: string;
+    type?: string;
+}
+export interface CreateProjectRequest {
+    name: string;
+    code: string;
+    begin: string;
+    end: string;
+    days?: number;
+    type?: 'sprint' | 'waterfall' | 'ops';
+    products: number[];
+    acl?: string;
+    desc?: string;
+    team?: string;
+}
+export interface CreateTaskRequest {
+    project: number;
+    name: string;
+    type?: string;
+    assignedTo?: string;
+    estimate?: number;
+    pri?: number;
+    desc?: string;
+    estStarted?: string;
+    deadline?: string;
+    story?: number;
+}
+export interface CreateBugRequest {
+    product: number;
+    title: string;
+    openedBuild?: string;
+    severity?: number;
+    pri?: number;
+    type?: string;
+    steps?: string;
+    story?: number;
+    assignedTo?: string;
+}
+export interface CreateStoryRequest {
+    product: number;
+    title: string;
+    spec?: string;
+    verify?: string;
+    pri?: number;
+    estimate?: number;
+    assignedTo?: string;
+    source?: string;
+    /** 默认 true，新建后直接是激活。传 false 才会进评审草稿。 */
+    needNotReview?: boolean;
+}
+export interface ChangeStoryRequest {
+    title?: string;
+    spec?: string;
+    verify?: string;
+    assignedTo?: string;
+    comment?: string;
+}
+export interface CreateBuildRequest {
+    project: number;
+    product: number;
+    name: string;
+    builder?: string;
+    date?: string;
+    desc?: string;
+}
+export interface Build {
+    id: number;
+    name: string;
+    project?: number;
+    product?: number;
+    builder?: string;
+    date?: string;
+}
+export interface CreateTestTaskRequest {
+    product: number;
+    project: number;
+    build: number;
+    name: string;
+    begin: string;
+    end: string;
+    owner?: string;
+    desc?: string;
 }
 export interface TestRunRequest {
     caseId: number;

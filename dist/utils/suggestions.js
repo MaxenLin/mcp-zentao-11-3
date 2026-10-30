@@ -11,9 +11,9 @@ export function suggestNextActionsForStory(story, hasRelatedBugs, hasTestCases) 
     if (story.status === 'active' || story.status === 'draft') {
         suggestions.push({
             action: '创建开发任务',
-            description: `为需求 #${story.id} 创建开发任务`,
-            tool: 'createTaskFromStory',
-            toolArgs: { storyId: story.id },
+            description: `为需求 #${story.id} 创建任务。还需要一个项目编号。`,
+            tool: 'createTask',
+            toolArgs: { name: story.title, story: story.id, type: 'devel' },
             priority: 'high'
         });
     }
@@ -64,9 +64,9 @@ export function suggestNextActionsForBug(bug, hasRelatedStory, isActive) {
     if (isActive) {
         suggestions.push({
             action: '创建修复任务',
-            description: `为 Bug #${bug.id} 创建修复任务`,
-            tool: 'createTaskFromBug',
-            toolArgs: { bugId: bug.id },
+            description: `为 Bug #${bug.id} 创建修复任务。还需要一个项目编号，任务本身不能直接挂在 Bug 上。`,
+            tool: 'createTask',
+            toolArgs: { name: `修复 ${bug.title}`, type: 'devel', desc: `Bug #${bug.id}` },
             priority: 'high'
         });
     }
@@ -99,13 +99,10 @@ export function suggestNextActionsForBug(bug, hasRelatedStory, isActive) {
     // 如果 Bug 已解决，建议标记为已解决
     if (bug.status === 'resolved') {
         suggestions.push({
-            action: '标记 Bug 为已关闭',
-            description: `将 Bug #${bug.id} 标记为已关闭`,
-            tool: 'resolveBug',
-            toolArgs: {
-                bugId: bug.id,
-                resolution: { resolution: 'fixed', comment: 'Bug 已修复并验证' }
-            },
+            action: '关闭 Bug',
+            description: `将 Bug #${bug.id} 关闭`,
+            tool: 'closeBug',
+            toolArgs: { bugId: bug.id },
             priority: 'low'
         });
     }
@@ -120,12 +117,9 @@ export function suggestNextActionsForTask(task, isCompleted = false) {
     if (task.status === 'wait') {
         suggestions.push({
             action: '开始任务',
-            description: `将任务 #${task.id} 状态更新为进行中`,
-            tool: 'updateTask',
-            toolArgs: {
-                taskId: task.id,
-                update: { status: 'doing' }
-            },
+            description: `开始任务 #${task.id}`,
+            tool: 'startTask',
+            toolArgs: { taskId: task.id },
             priority: 'high'
         });
     }
@@ -137,6 +131,15 @@ export function suggestNextActionsForTask(task, isCompleted = false) {
             tool: 'finishTask',
             toolArgs: { taskId: task.id },
             priority: 'high'
+        });
+    }
+    if (task.status === 'done') {
+        suggestions.push({
+            action: '关闭任务',
+            description: `关闭任务 #${task.id}`,
+            tool: 'closeTask',
+            toolArgs: { taskId: task.id },
+            priority: 'medium'
         });
     }
     // 建议分析工作量

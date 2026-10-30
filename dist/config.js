@@ -15,8 +15,38 @@ export function saveConfig(config) {
         ...config,
         apiVersion: 'legacy'
     };
-    // 写入配置文件
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(legacyConfig, null, 2));
+    // 写入配置文件。mode 会被 umask 改掉，所以再 chmod 一次。
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(legacyConfig, null, 2), { mode: 0o600 });
+    try {
+        fs.chmodSync(CONFIG_FILE, 0o600);
+    }
+    catch {
+        // Windows 或不支持 chmod 时保留默认权限
+    }
+}
+export function getConfigFilePath() {
+    return CONFIG_FILE;
+}
+export function loadFileConfig() {
+    try {
+        if (!fs.existsSync(CONFIG_FILE)) {
+            return null;
+        }
+        const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+        if (!config?.url || !config?.username || !config?.password) {
+            return null;
+        }
+        return {
+            url: config.url,
+            username: config.username,
+            password: config.password,
+            apiVersion: 'legacy'
+        };
+    }
+    catch (error) {
+        console.error('读取配置文件失败:', error);
+        return null;
+    }
 }
 // 读取配置（优先从环境变量读取，其次从配置文件）
 export function loadConfig() {
@@ -32,23 +62,5 @@ export function loadConfig() {
             apiVersion: 'legacy'
         };
     }
-    // 如果环境变量不存在，从配置文件读取
-    try {
-        if (fs.existsSync(CONFIG_FILE)) {
-            const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-            // 强制设置为 legacy
-            return {
-                ...config,
-                apiVersion: 'legacy'
-            };
-        }
-    }
-    catch (error) {
-        console.error('读取配置文件失败:', error);
-    }
-    return null;
-}
-// 检查是否已配置
-export function isConfigured() {
-    return fs.existsSync(CONFIG_FILE);
+    return loadFileConfig();
 }

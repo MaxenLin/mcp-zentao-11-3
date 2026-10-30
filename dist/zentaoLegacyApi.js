@@ -2,6 +2,8 @@
  * 禅道旧版API (11.x版本)
  * 使用Session认证方式
  */
+import http from 'node:http';
+import https from 'node:https';
 import axios from 'axios';
 export class ZentaoLegacyAPI {
     constructor(config) {
@@ -11,10 +13,51 @@ export class ZentaoLegacyAPI {
         this.client = axios.create({
             baseURL: this.config.url,
             timeout: 10000,
+            // 长连接闲置后会被 Apache 丢掉，下一次写操作变成 ECONNRESET，服务端甚至没有访问日志。
+            httpAgent: new http.Agent({ keepAlive: false }),
+            httpsAgent: new https.Agent({ keepAlive: false }),
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
+                Connection: 'close',
             },
+            // $this->locate() 是 302。跟着跳会丢掉 zentaosid，下一页就变成登录页。
+            maxRedirects: 0,
+            validateStatus: (status) => status >= 200 && status < 400,
         });
+    }
+    /**
+     * 禅道 11.3 的 Content-Type 是 text/html，响应体仍是 JSON。
+     * axios 通常会解析，这里再兜一层，避免拿到字符串时读不到 status。
+     */
+    normalizeBody(payload) {
+        if (typeof payload !== 'string') {
+            return payload;
+        }
+        const trimmed = payload.trim();
+        if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+            return payload;
+        }
+        try {
+            return JSON.parse(trimmed);
+        }
+        catch {
+            return payload;
+        }
+    }
+    /**
+     * 禅道 11.x 的 data 有时是 JSON 字符串，有时已经是对象。
+     */
+    parsePayload(data) {
+        if (data == null || data === '') {
+            return {};
+        }
+        if (typeof data === 'object') {
+            return data;
+        }
+        if (typeof data === 'string') {
+            return JSON.parse(data);
+        }
+        throw new Error(`无法解析禅道响应: ${String(data).slice(0, 200)}`);
     }
     /**
      * 获取SessionID
@@ -24,12 +67,16 @@ export class ZentaoLegacyAPI {
             return this.sessionId;
         try {
             const response = await this.client.get('/api-getSessionID.json');
-            if (response.data.status === 'success') {
-                const data = JSON.parse(response.data.data);
+            const body = this.normalizeBody(response.data);
+            if (body.status === 'success') {
+                const data = this.parsePayload(body.data);
+                if (!data?.sessionID) {
+                    throw new Error(`获取SessionID失败: ${JSON.stringify(body)}`);
+                }
                 this.sessionId = data.sessionID;
                 return this.sessionId;
             }
-            throw new Error(`获取SessionID失败: ${JSON.stringify(response.data)}`);
+            throw new Error(`获取SessionID失败: ${JSON.stringify(body)}`);
         }
         catch (error) {
             if (axios.isAxiosError(error)) {
@@ -89,16 +136,38 @@ export class ZentaoLegacyAPI {
         return this.sessionId;
     }
     /**
-     * 检测响应是否为会话过期（重定向到登录页面）
+     * 写操作和确认删除经常返回 HTML，而不是 JSON。
+     * alert 是失败，confirm 表示还没执行，location 才是已经跳走。
      */
-    isSessionExpired(responseData) {
-        if (typeof responseData === 'string') {
-            // 检测HTML重定向到登录页面
-            return responseData.includes('user-login') ||
-                responseData.includes('self.location') ||
-                responseData.includes('<script>');
+    /** 302 的 Location 就是成功后的去向。跳到登录页才是会话失效。 */
+    redirectOutcome(status, location) {
+        if (status < 300 || status >= 400) {
+            return null;
         }
-        return false;
+        const locate = String(location || '');
+        if (locate.includes('user-login')) {
+            return { ok: false, expired: true, data: { locate }, message: '会话已过期' };
+        }
+        return { ok: true, expired: false, data: { locate }, message: '' };
+    }
+    htmlOutcome(body) {
+        if (body.includes('user-login')) {
+            return { ok: false, expired: true, data: body, message: '会话已过期' };
+        }
+        const alertText = this.alertMessage(body);
+        if (alertText) {
+            return { ok: false, expired: false, data: body, message: alertText };
+        }
+        if (/confirm\s*\(/.test(body)) {
+            const matched = body.match(/confirm\(\s*"([^"]*)"/) || body.match(/confirm\(\s*'((?:\\'|[^'])*)'/);
+            const message = (matched?.[1] || '操作需要确认').replace(/\\'/g, "'").replace(/\\n/g, '\n');
+            return { ok: false, expired: false, data: body, message };
+        }
+        if (/\.location\s*=/.test(body)) {
+            const locate = body.match(/\.location\s*=\s*'([^']*)'/);
+            return { ok: true, expired: false, data: { locate: locate?.[1] ?? '' }, message: '' };
+        }
+        return null;
     }
     /**
      * 发起请求（带自动重试）
@@ -108,19 +177,38 @@ export class ZentaoLegacyAPI {
         try {
             const fullUrl = `${url}?zentaosid=${sid}`;
             const response = await this.client.get(fullUrl, { params });
-            // 检测会话过期
-            if (this.isSessionExpired(response.data)) {
-                if (!retried) {
-                    console.log('检测到会话过期，正在重新登录...');
-                    await this.forceReLogin();
-                    return this.request(url, params, true);
+            const redirected = this.redirectOutcome(response.status, response.headers?.location);
+            if (redirected) {
+                if (redirected.expired) {
+                    if (!retried) {
+                        console.error('检测到会话过期，正在重新登录...');
+                        await this.forceReLogin();
+                        return this.request(url, params, true);
+                    }
+                    throw new Error('会话已过期，重新登录后仍然失败');
                 }
-                throw new Error('会话已过期，重新登录后仍然失败');
+                return redirected.data;
             }
-            if (response.data.status === 'success') {
-                return JSON.parse(response.data.data);
+            const body = this.normalizeBody(response.data);
+            if (typeof body === 'string') {
+                const outcome = this.htmlOutcome(body);
+                if (outcome?.expired) {
+                    if (!retried) {
+                        console.error('检测到会话过期，正在重新登录...');
+                        await this.forceReLogin();
+                        return this.request(url, params, true);
+                    }
+                    throw new Error('会话已过期，重新登录后仍然失败');
+                }
+                if (outcome?.ok) {
+                    return outcome.data;
+                }
+                throw new Error(outcome?.message || `请求失败: ${body.slice(0, 300)}`);
             }
-            throw new Error(`请求失败: ${JSON.stringify(response.data)}`);
+            if (body.status === 'success') {
+                return this.parsePayload(body.data);
+            }
+            throw new Error(`请求失败: ${typeof body === 'string' ? body.slice(0, 300) : JSON.stringify(body).slice(0, 300)}`);
         }
         catch (error) {
             if (axios.isAxiosError(error)) {
@@ -144,23 +232,49 @@ export class ZentaoLegacyAPI {
             const params = new URLSearchParams();
             if (data) {
                 Object.keys(data).forEach(key => {
-                    params.append(key, data[key]);
+                    const value = data[key];
+                    // undefined 会被拼成字符串 "undefined" 提交给禅道
+                    if (value === undefined || value === null) {
+                        return;
+                    }
+                    if (Array.isArray(value)) {
+                        value.forEach(item => {
+                            if (item !== undefined && item !== null) {
+                                params.append(key, String(item));
+                            }
+                        });
+                        return;
+                    }
+                    params.append(key, String(value));
                 });
             }
             const response = await this.client.post(fullUrl, params);
-            // 检测会话过期
-            if (this.isSessionExpired(response.data)) {
+            const redirected = this.redirectOutcome(response.status, response.headers?.location);
+            if (redirected) {
+                if (redirected.expired) {
+                    if (!retried) {
+                        console.error('检测到会话过期，正在重新登录...');
+                        await this.forceReLogin();
+                        return this.postRequest(url, data, true);
+                    }
+                    throw new Error('会话已过期，重新登录后仍然失败');
+                }
+                return redirected.data;
+            }
+            const body = this.normalizeBody(response.data);
+            const outcome = this.postOutcome(body);
+            if (outcome.expired) {
                 if (!retried) {
-                    console.log('检测到会话过期，正在重新登录...');
+                    console.error('检测到会话过期，正在重新登录...');
                     await this.forceReLogin();
                     return this.postRequest(url, data, true);
                 }
                 throw new Error('会话已过期，重新登录后仍然失败');
             }
-            if (response.data.status === 'success') {
-                return response.data.data ? JSON.parse(response.data.data) : response.data;
+            if (outcome.ok) {
+                return outcome.data;
             }
-            throw new Error(`请求失败: ${JSON.stringify(response.data)}`);
+            throw new Error(outcome.message);
         }
         catch (error) {
             if (axios.isAxiosError(error)) {
@@ -175,16 +289,161 @@ export class ZentaoLegacyAPI {
         }
     }
     /**
-     * 获取产品列表
+     * 禅道写操作有三种成功返回：status/data、result/locate，以及 js::locate 的 HTML。
+     * 校验失败是 alert()，不能把带 script 的页面都当成掉线。
+     */
+    postOutcome(body) {
+        if (typeof body === 'string') {
+            return this.htmlOutcome(body) ?? {
+                ok: false,
+                expired: false,
+                data: body,
+                message: `请求失败: ${body.slice(0, 300)}`,
+            };
+        }
+        if (body && typeof body === 'object') {
+            if (body.status === 'success' || body.result === 'success') {
+                const data = body.data != null && body.data !== '' ? this.parsePayload(body.data) : body;
+                return { ok: true, expired: false, data, message: '' };
+            }
+            if (body.status === 'fail' || body.result === 'fail') {
+                const message = typeof body.message === 'string'
+                    ? body.message
+                    : JSON.stringify(body.message ?? body);
+                return { ok: false, expired: false, data: body, message };
+            }
+        }
+        return {
+            ok: false,
+            expired: false,
+            data: body,
+            message: `请求失败: ${JSON.stringify(body).slice(0, 300)}`,
+        };
+    }
+    alertMessage(body) {
+        if (typeof body !== 'string') {
+            return null;
+        }
+        const alertMatch = body.match(/alert\('((?:\\'|[^'])*)'\)/);
+        if (!alertMatch) {
+            return null;
+        }
+        const message = alertMatch[1].replace(/\\n/g, '\n').replace(/\\'/g, "'").trim();
+        return message || '请求失败';
+    }
+    today() {
+        const now = new Date();
+        const pad = (value) => String(value).padStart(2, '0');
+        return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    }
+    dateOnly(value) {
+        const text = String(value ?? '');
+        if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+            return text.slice(0, 10);
+        }
+        return '0000-00-00';
+    }
+    /**
+     * 用例步骤在详情里是对象列表，对外保持一段文本。
+     */
+    stepsText(steps) {
+        if (!steps) {
+            return '';
+        }
+        if (typeof steps === 'string') {
+            return steps;
+        }
+        const list = Array.isArray(steps) ? steps : (typeof steps === 'object' ? Object.values(steps) : []);
+        if (list.length === 0) {
+            return '';
+        }
+        return list.map((step, index) => {
+            const desc = String(step?.desc || step?.name || '').trim();
+            const expect = String(step?.expect || '').trim();
+            if (!desc && !expect) {
+                return '';
+            }
+            return `${index + 1}. ${desc}${expect ? ` => ${expect}` : ''}`;
+        }).filter(Boolean).join('\n');
+    }
+    /**
+     * 用分页里的 pageTotal 判断还有没有下一页。
+     * pageTotal 缺失时再退回 recTotal / recPerPage。
+     */
+    hasNextPage(pager, currentPage, batchSize) {
+        if (!pager || batchSize <= 0) {
+            return false;
+        }
+        if (pager.pageTotal !== undefined && pager.pageTotal !== null && pager.pageTotal !== '') {
+            const pageTotal = Number(pager.pageTotal);
+            if (Number.isFinite(pageTotal)) {
+                return currentPage < pageTotal;
+            }
+        }
+        const recPerPage = Number(pager.recPerPage);
+        const recTotal = Number(pager.recTotal);
+        if (!Number.isFinite(recPerPage) || recPerPage <= 0) {
+            return false;
+        }
+        return currentPage < Math.ceil(recTotal / recPerPage);
+    }
+    /**
+     * 禅道模块树有时是 {id: name}，只有根模块时会变成 ["/"]。
+     * 根节点不是业务模块，不返回。
+     */
+    moduleMap(modules) {
+        if (!modules || typeof modules !== 'object') {
+            return {};
+        }
+        const entries = Array.isArray(modules)
+            ? modules.map((name, index) => [String(index), name])
+            : Object.entries(modules);
+        const map = {};
+        for (const [id, name] of entries) {
+            if (name === undefined || name === null || name === '' || id === '0' || name === '/') {
+                continue;
+            }
+            map[id] = String(name);
+        }
+        return map;
+    }
+    linkedId(value) {
+        if (value === undefined || value === null || value === '') {
+            return 0;
+        }
+        const id = parseInt(String(value), 10);
+        return Number.isFinite(id) && id > 0 ? id : 0;
+    }
+    /**
+     * 获取产品列表。优先用 product-all 的统计数据，里面有编号、状态和描述。
      */
     async getProducts() {
+        try {
+            const data = await this.request('/product-all.json');
+            const stats = data.productStats;
+            const list = Array.isArray(stats)
+                ? stats
+                : (stats && typeof stats === 'object' ? Object.values(stats) : []);
+            if (list.length > 0) {
+                return list.map((product) => ({
+                    id: parseInt(product.id),
+                    name: product.name,
+                    code: product.code || '',
+                    status: product.status || '',
+                    desc: product.desc || ''
+                }));
+            }
+        }
+        catch (error) {
+            console.error('获取产品统计失败，改用产品索引:', error);
+        }
         const data = await this.request('/product-index-no.json');
         const products = data.products || {};
         return Object.keys(products).map(id => ({
             id: parseInt(id),
             name: products[id],
             code: '',
-            status: 'normal',
+            status: '',
             desc: ''
         }));
     }
@@ -197,20 +456,19 @@ export class ZentaoLegacyAPI {
         try {
             // 尝试多个可能的API路径
             const paths = [
-                `/product-browse-${productId}.json`, // 产品浏览页面
-                `/story-create-${productId}.json`, // 创建需求页面（包含模块树）
+                `/tree-browse-${productId}-story.json`,
+                `/product-browse-${productId}.json`,
+                `/story-create-${productId}.json`,
             ];
             for (const apiPath of paths) {
                 try {
                     const data = await this.request(apiPath);
-                    const modules = data.modules || data.moduleTree || {};
+                    const modules = this.moduleMap(data.modules || data.productModules || data.moduleTree || {});
                     if (Object.keys(modules).length > 0) {
-                        // modules 格式: { "1296": "家族养成游戏道具兑换——肖仲政", ... }
                         return modules;
                     }
                 }
                 catch (err) {
-                    // 继续尝试下一个路径
                     continue;
                 }
             }
@@ -241,17 +499,7 @@ export class ZentaoLegacyAPI {
      */
     async getTaskDetail(taskId) {
         const data = await this.request(`/task-view-${taskId}.json`);
-        const task = data.task;
-        return {
-            id: parseInt(task.id),
-            name: task.name,
-            status: task.status,
-            pri: parseInt(task.pri),
-            deadline: task.deadline,
-            desc: task.desc || '',
-            story: task.story || undefined,
-            product: task.product || undefined,
-        };
+        return this.mapTask(data.task);
     }
     /**
      * 获取我的Bug列表
@@ -297,6 +545,7 @@ export class ZentaoLegacyAPI {
                 param = 0;
             }
             const allBugs = [];
+            const seenBugIds = new Set();
             let currentPage = 1;
             const pageSize = 100;
             let hasMore = true;
@@ -305,16 +554,17 @@ export class ZentaoLegacyAPI {
                 const data = await this.request(url);
                 const bugs = data.bugs || {};
                 const bugsArray = Object.values(bugs);
-                allBugs.push(...bugsArray);
-                // 检查分页信息
-                if (data.pager) {
-                    const { recTotal, recPerPage, pageID } = data.pager;
-                    const totalPages = Math.ceil(recTotal / recPerPage);
-                    hasMore = currentPage < totalPages && bugsArray.length > 0;
+                for (const rawBug of bugsArray) {
+                    const bugId = parseInt(rawBug.id);
+                    if (!Number.isNaN(bugId) && seenBugIds.has(bugId)) {
+                        continue;
+                    }
+                    if (!Number.isNaN(bugId)) {
+                        seenBugIds.add(bugId);
+                    }
+                    allBugs.push(rawBug);
                 }
-                else {
-                    hasMore = false;
-                }
+                hasMore = this.hasNextPage(data.pager, currentPage, bugsArray.length);
                 currentPage++;
                 // 安全限制：最多获取100页
                 if (currentPage > 100) {
@@ -328,6 +578,7 @@ export class ZentaoLegacyAPI {
                 severity: parseInt(bug.severity),
                 steps: bug.steps || '',
                 openedDate: bug.openedDate,
+                story: this.linkedId(bug.story) || undefined,
                 product: bug.product ? parseInt(bug.product) : undefined,
                 module: bug.module ? parseInt(bug.module) : undefined,
             }));
@@ -350,6 +601,12 @@ export class ZentaoLegacyAPI {
         const data = await this.request(`/bug-view-${bugId}.json`);
         const bug = data.bug;
         const product = data.product;
+        let productName = product?.name;
+        // 11.3 的 bug-view 不带产品对象，名称要从产品列表补。
+        if (!productName && this.linkedId(bug.product)) {
+            const products = await this.getProducts();
+            productName = products.find(item => item.id === parseInt(bug.product))?.name;
+        }
         return {
             id: parseInt(bug.id),
             title: bug.title,
@@ -357,22 +614,36 @@ export class ZentaoLegacyAPI {
             severity: parseInt(bug.severity),
             steps: bug.steps || '',
             openedDate: bug.openedDate,
-            story: bug.story || undefined,
+            story: this.linkedId(bug.story) || undefined,
             product: bug.product || undefined,
-            productName: product?.name || undefined,
+            productName,
+            assignedTo: bug.assignedTo || undefined,
         };
     }
     /**
      * 更新任务
      */
     async updateTask(taskId, update) {
+        const data = await this.request(`/task-view-${taskId}.json`);
+        const current = data.task;
+        // 编辑接口会按提交的整张表单覆盖。只传工时会把名称、类型清空，消耗还会被默认成 0。
+        const consumed = update.consumed ?? Number(current.consumed || 0);
+        const left = update.left ?? Number(current.left || 0);
         await this.postRequest(`/task-edit-${taskId}.json`, {
-            consumed: update.consumed,
-            left: update.left,
-            status: update.status,
+            name: current.name,
+            type: current.type || 'devel',
+            pri: current.pri || 3,
+            estimate: current.estimate || 0,
+            consumed,
+            left,
+            status: update.status || current.status,
+            assignedTo: current.assignedTo || '',
+            estStarted: this.dateOnly(current.estStarted),
+            deadline: this.dateOnly(current.deadline),
+            desc: current.desc || '',
+            story: this.linkedId(current.story) || 0,
             comment: update.comment || '',
         });
-        // 返回更新后的任务详情
         return await this.getTaskDetail(taskId);
     }
     /**
@@ -381,7 +652,7 @@ export class ZentaoLegacyAPI {
     async finishTask(taskId, update) {
         await this.postRequest(`/task-finish-${taskId}.json`, {
             consumed: update.consumed || 0,
-            finishedDate: update.finishedDate || new Date().toISOString().split('T')[0],
+            finishedDate: update.finishedDate || this.today(),
             comment: update.comment || '',
         });
     }
@@ -391,7 +662,8 @@ export class ZentaoLegacyAPI {
     async resolveBug(bugId, resolution) {
         await this.postRequest(`/bug-resolve-${bugId}.json`, {
             resolution: resolution.resolution,
-            resolvedBuild: resolution.resolvedBuild || '',
+            resolvedBuild: resolution.resolvedBuild || 'trunk',
+            duplicateBug: resolution.duplicateBug,
             comment: resolution.comment || '',
         });
     }
@@ -468,17 +740,7 @@ export class ZentaoLegacyAPI {
                         allStories.push(rawStory);
                     }
                 }
-                // 检查分页信息
-                if (data.pager) {
-                    const { recTotal, recPerPage } = data.pager;
-                    const totalPages = Math.ceil(recTotal / recPerPage);
-                    // 判断是否还有更多数据
-                    hasMore = currentPage < totalPages && storiesArray.length > 0;
-                }
-                else {
-                    // 没有分页信息，说明没有更多数据
-                    hasMore = false;
-                }
+                hasMore = this.hasNextPage(data.pager, currentPage, storiesArray.length);
                 currentPage++;
                 // 安全限制：最多获取100页，避免无限循环
                 if (currentPage > 100) {
@@ -516,6 +778,30 @@ export class ZentaoLegacyAPI {
             mappedStories = mappedStories.filter(story => story.status === status);
         }
         return mappedStories;
+    }
+    /**
+     * 获取指派给我的需求。列表接口不带描述。
+     */
+    async getMyStories() {
+        const data = await this.request('/my-story.json');
+        return Object.values(data.stories || {}).map((story) => ({
+            id: parseInt(story.id),
+            title: story.title,
+            status: story.status,
+            pri: parseInt(story.pri),
+            stage: story.stage,
+            estimate: story.estimate ? parseFloat(story.estimate) : undefined,
+            openedBy: story.openedBy,
+            openedDate: story.openedDate,
+            assignedTo: story.assignedTo,
+            spec: story.spec || '',
+            module: story.module,
+            product: story.product,
+            productName: story.productTitle || story.productName,
+            closedBy: story.closedBy,
+            closedDate: story.closedDate,
+            closedReason: story.closedReason,
+        }));
     }
     /**
      * 获取需求详情
@@ -648,7 +934,14 @@ export class ZentaoLegacyAPI {
             if (startDate || endDate) {
                 allStories = this.filterByDateRange(allStories, startDate, endDate);
             }
-            // 分词：将关键字拆分为多个词（支持中英文）
+            // 列表接口没有 spec。数量不多时补详情，否则描述里的关键字搜不到。
+            const specCap = allStories.length <= 20 || deepSearch
+                ? Math.min(allStories.length, deepSearch ? 30 : 20)
+                : 0;
+            if (specCap > 0) {
+                allStories = await this.attachSpecs(allStories, specCap);
+            }
+            // 分词：中文按二字词，不再把每个字都当成命中。
             const keywords = this.splitKeywords(keyword);
             const keyword_lower = keyword.toLowerCase();
             // 计算匹配度评分
@@ -656,31 +949,6 @@ export class ZentaoLegacyAPI {
                 const score = this.calculateMatchScore(story, keyword_lower, keywords);
                 return { story, score };
             }).filter(item => item.score > 0); // 只保留有匹配的
-            // 如果启用深度搜索，对标题匹配但描述可能不完整的需求获取详情
-            if (deepSearch) {
-                const titleMatchedButLowScore = scoredStories
-                    .filter(item => {
-                    const titleMatch = item.story.title.toLowerCase().includes(keyword_lower);
-                    const specMatch = item.story.spec && item.story.spec.toLowerCase().includes(keyword_lower);
-                    return titleMatch && !specMatch && item.score < 50; // 标题匹配但描述不匹配，且评分较低
-                })
-                    .slice(0, 10); // 最多深度搜索10个
-                for (const item of titleMatchedButLowScore) {
-                    try {
-                        const detail = await this.getStoryDetail(item.story.id);
-                        // 使用完整描述重新计算评分
-                        const newScore = this.calculateMatchScore(detail, keyword_lower, keywords);
-                        if (newScore > item.score) {
-                            item.story = detail;
-                            item.score = newScore;
-                        }
-                    }
-                    catch (error) {
-                        // 忽略获取详情失败的情况
-                        continue;
-                    }
-                }
-            }
             // 按评分降序排序
             scoredStories.sort((a, b) => {
                 if (b.score !== a.score) {
@@ -698,23 +966,49 @@ export class ZentaoLegacyAPI {
         }
     }
     /**
-     * 分词：将关键字拆分为多个词
-     * 支持中英文混合，中文按字符拆分，英文按单词拆分
+     * 分词：英文按单词，中文按二字词。
      */
     splitKeywords(keyword) {
         const keywords = [];
         const lowerKeyword = keyword.toLowerCase();
-        // 英文单词（字母、数字、连字符）
         const englishWords = lowerKeyword.match(/[a-z0-9]+(?:-[a-z0-9]+)*/g) || [];
-        keywords.push(...englishWords);
-        // 中文字符（每个字符作为一个词）
-        const chineseChars = lowerKeyword.match(/[\u4e00-\u9fa5]/g) || [];
-        keywords.push(...chineseChars);
-        // 如果分词后没有结果，返回原始关键字
+        keywords.push(...englishWords.filter(word => word.length >= 2 || lowerKeyword.length === 1));
+        // 两个字及以上的中文用二字词。单字关键字仍按这个字匹配。
+        const runs = lowerKeyword.match(/[\u4e00-\u9fa5]+/g) || [];
+        for (const run of runs) {
+            if (run.length === 1) {
+                keywords.push(run);
+                continue;
+            }
+            for (let i = 0; i < run.length - 1; i++) {
+                keywords.push(run.slice(i, i + 2));
+            }
+        }
         if (keywords.length === 0) {
             keywords.push(lowerKeyword);
         }
         return keywords;
+    }
+    /**
+     * 列表里的需求没有描述。只给缺少 spec 的条目补详情。
+     */
+    async attachSpecs(stories, cap) {
+        const missing = stories.filter(story => !story.spec).slice(0, cap);
+        if (missing.length === 0) {
+            return stories;
+        }
+        const details = new Map();
+        const batchSize = 5;
+        for (let i = 0; i < missing.length; i += batchSize) {
+            const batch = missing.slice(i, i + batchSize);
+            const results = await Promise.allSettled(batch.map(story => this.getStoryDetail(story.id)));
+            results.forEach((result, index) => {
+                if (result.status === 'fulfilled') {
+                    details.set(batch[index].id, result.value);
+                }
+            });
+        }
+        return stories.map(story => details.get(story.id) ?? story);
     }
     /**
      * 按时间范围过滤需求
@@ -792,8 +1086,9 @@ export class ZentaoLegacyAPI {
         // 标题包含部分关键字（分词匹配）
         else {
             const titleKeywordMatches = keywords.filter(k => title_lower.includes(k)).length;
-            if (titleKeywordMatches > 0) {
-                score += 60 * (titleKeywordMatches / keywords.length); // 按匹配比例计算
+            // 必须命中过半的词，避免只撞上一个字或一个词组就返回。
+            if (titleKeywordMatches > 0 && titleKeywordMatches / keywords.length > 0.5) {
+                score += 60 * (titleKeywordMatches / keywords.length);
             }
         }
         // 描述包含完整关键字
@@ -803,7 +1098,7 @@ export class ZentaoLegacyAPI {
         // 描述包含部分关键字
         else if (spec_lower) {
             const specKeywordMatches = keywords.filter(k => spec_lower.includes(k)).length;
-            if (specKeywordMatches > 0) {
+            if (specKeywordMatches > 0 && specKeywordMatches / keywords.length > 0.5) {
                 score += 20 * (specKeywordMatches / keywords.length);
             }
         }
@@ -883,15 +1178,7 @@ export class ZentaoLegacyAPI {
                 const cases = data.cases || {};
                 const casesArray = Object.values(cases);
                 allCases.push(...casesArray);
-                // 检查分页信息
-                if (data.pager) {
-                    const { recTotal, recPerPage, pageID } = data.pager;
-                    const totalPages = Math.ceil(recTotal / recPerPage);
-                    hasMore = currentPage < totalPages && casesArray.length > 0;
-                }
-                else {
-                    hasMore = false;
-                }
+                hasMore = this.hasNextPage(data.pager, currentPage, casesArray.length);
                 currentPage++;
                 // 安全限制：最多获取100页
                 if (currentPage > 100) {
@@ -901,8 +1188,8 @@ export class ZentaoLegacyAPI {
             let mappedCases = allCases.map((testCase) => ({
                 id: parseInt(testCase.id),
                 product: parseInt(testCase.product),
-                module: testCase.module ? parseInt(testCase.module) : undefined,
-                story: testCase.story ? parseInt(testCase.story) : undefined,
+                module: this.linkedId(testCase.module) || undefined,
+                story: this.linkedId(testCase.story) || undefined,
                 title: testCase.title,
                 type: testCase.type,
                 pri: parseInt(testCase.pri),
@@ -933,19 +1220,24 @@ export class ZentaoLegacyAPI {
         try {
             const data = await this.request(`/testcase-view-${caseId}.json`);
             const testCase = data.case;
+            let productName = data.product?.name;
+            if (!productName && this.linkedId(testCase.product)) {
+                const products = await this.getProducts();
+                productName = products.find(item => item.id === parseInt(testCase.product))?.name;
+            }
             return {
                 id: parseInt(testCase.id),
                 product: parseInt(testCase.product),
-                productName: data.product?.name,
-                module: testCase.module ? parseInt(testCase.module) : undefined,
+                productName,
+                module: this.linkedId(testCase.module) || undefined,
                 moduleName: testCase.moduleName,
-                story: testCase.story ? parseInt(testCase.story) : undefined,
+                story: this.linkedId(testCase.story) || undefined,
                 title: testCase.title,
                 type: testCase.type,
                 pri: parseInt(testCase.pri),
                 status: testCase.status,
                 precondition: testCase.precondition || '',
-                steps: testCase.steps || '',
+                steps: this.stepsText(testCase.steps),
                 openedBy: testCase.openedBy,
                 openedDate: testCase.openedDate,
                 lastEditedBy: testCase.lastEditedBy,
@@ -962,18 +1254,39 @@ export class ZentaoLegacyAPI {
      */
     async createTestCase(testCase) {
         try {
-            const data = await this.postRequest(`/testcase-create-${testCase.product}.json`, {
+            const fields = {
+                product: testCase.product,
                 title: testCase.title,
                 type: testCase.type || 'feature',
                 pri: testCase.pri || 3,
                 module: testCase.module || 0,
                 story: testCase.story || 0,
                 precondition: testCase.precondition || '',
-                steps: testCase.steps || '',
-                status: testCase.status || 'normal',
+            };
+            // 11.3 只认 steps[n] / expects[n]，单个 steps 字符串不会写入步骤。
+            const lines = (testCase.steps || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+            lines.forEach((line, index) => {
+                const n = index + 1;
+                fields[`steps[${n}]`] = line.replace(/^\d+[.、]\s*/, '');
+                fields[`expects[${n}]`] = '';
+                fields[`stepType[${n}]`] = 'step';
             });
-            // 从响应中提取测试用例ID
-            return data.id || 0;
+            const data = await this.postRequest(`/testcase-create-${testCase.product}.json`, fields);
+            const located = String(data?.locate || '').match(/testcase-view-(\d+)/);
+            if (located) {
+                return parseInt(located[1], 10);
+            }
+            const directId = parseInt(String(data?.id ?? ''), 10);
+            if (directId > 0) {
+                return directId;
+            }
+            // 成功时 locate 经常是用例列表，没有新编号。按标题回查，列表是 id 倒序。
+            const cases = await this.getProductTestCases(testCase.product, 'all');
+            const found = cases.find(item => item.title === testCase.title);
+            if (found) {
+                return found.id;
+            }
+            throw new Error('测试用例已提交，但没有拿到编号');
         }
         catch (error) {
             console.error('创建测试用例失败:', error);
@@ -1070,7 +1383,8 @@ export class ZentaoLegacyAPI {
             const runsArray = Object.values(runs);
             const mappedResults = runsArray.map((run) => ({
                 id: parseInt(run.id),
-                run: parseInt(run.task),
+                // 列表行的 id 是执行记录。run 也用它，方便交给 runTestCase。
+                run: parseInt(run.id),
                 case: parseInt(run.case),
                 caseTitle: run.title,
                 version: parseInt(run.version),
@@ -1091,12 +1405,24 @@ export class ZentaoLegacyAPI {
      */
     async runTestCase(taskId, testRun) {
         try {
-            await this.postRequest(`/testtask-runCase-${taskId}-${testRun.caseId}.json`, {
-                version: testRun.version || 1,
-                caseResult: testRun.result,
-                steps: testRun.steps || '',
-                comment: testRun.comment || '',
-            });
+            const version = testRun.version || 1;
+            const detail = await this.request(`/testcase-view-${testRun.caseId}.json`);
+            const rawSteps = detail.case?.steps;
+            const stepList = !rawSteps ? [] : (Array.isArray(rawSteps) ? rawSteps : Object.values(rawSteps));
+            const stepIds = stepList
+                .map((step) => step?.id)
+                .filter((id) => id !== undefined && id !== null && String(id) !== '');
+            // 结果表没有 comment 列。页面是按步骤编号提交 steps[id] / reals[id]。
+            const fields = {
+                case: testRun.caseId,
+                version: detail.case?.version || version,
+            };
+            const actual = [testRun.comment, testRun.steps].filter(Boolean).join('\n');
+            for (const stepId of (stepIds.length ? stepIds : [0])) {
+                fields[`steps[${stepId}]`] = testRun.result === 'skipped' ? 'n/a' : testRun.result;
+                fields[`reals[${stepId}]`] = actual;
+            }
+            await this.postRequest(`/testtask-runCase-${taskId}-${testRun.caseId}-${version}.json`, fields);
         }
         catch (error) {
             console.error('执行测试用例失败:', error);
@@ -1108,23 +1434,13 @@ export class ZentaoLegacyAPI {
      */
     async getStoryRelatedBugs(storyId) {
         try {
-            // 获取所有 Bug，然后过滤出关联到该需求的 Bug
-            const allBugs = await this.getMyBugs();
-            const relatedBugs = [];
-            // 并行获取所有 Bug 的详情以检查关联关系
-            const bugDetailsPromises = allBugs.map(bug => this.getBugDetail(bug.id).catch(() => null));
-            const bugDetails = await Promise.all(bugDetailsPromises);
-            for (const bugDetail of bugDetails) {
-                if (bugDetail && bugDetail.story) {
-                    const bugStoryId = typeof bugDetail.story === 'string'
-                        ? parseInt(bugDetail.story)
-                        : bugDetail.story;
-                    if (bugStoryId === storyId) {
-                        relatedBugs.push(bugDetail);
-                    }
-                }
-            }
-            return relatedBugs;
+            const story = await this.getStoryDetail(storyId);
+            const productId = this.linkedId(story.product);
+            // 我的 Bug 只包含指派给自己的。产品里未指派的 Bug 会漏掉。
+            const bugs = productId
+                ? await this.getProductBugs(productId, 'all')
+                : await this.getMyBugs();
+            return bugs.filter(bug => this.linkedId(bug.story) === storyId);
         }
         catch (error) {
             console.error(`获取需求 ${storyId} 关联的 Bug 失败:`, error);
@@ -1137,17 +1453,396 @@ export class ZentaoLegacyAPI {
     async getBugRelatedStory(bugId) {
         try {
             const bug = await this.getBugDetail(bugId);
-            if (!bug.story) {
+            const storyId = this.linkedId(bug.story);
+            if (!storyId) {
                 return null;
             }
-            const storyId = typeof bug.story === 'string'
-                ? parseInt(bug.story)
-                : bug.story;
             return await this.getStoryDetail(storyId);
         }
         catch (error) {
             console.error(`获取 Bug ${bugId} 关联的需求失败:`, error);
             return null;
         }
+    }
+    locateId(data, pattern) {
+        const sources = [data?.locate, data?.message, typeof data === 'string' ? data : ''];
+        for (const source of sources) {
+            const matched = String(source ?? '').match(pattern);
+            if (!matched) {
+                continue;
+            }
+            const id = parseInt(matched[1], 10);
+            if (id > 0) {
+                return id;
+            }
+        }
+        const direct = parseInt(String(data?.id ?? ''), 10);
+        return Number.isFinite(direct) && direct > 0 ? direct : 0;
+    }
+    daySpan(begin, end) {
+        const start = Date.parse(`${begin}T00:00:00Z`);
+        const stop = Date.parse(`${end}T00:00:00Z`);
+        if (!Number.isFinite(start) || !Number.isFinite(stop) || stop <= start) {
+            return 1;
+        }
+        return Math.round((stop - start) / 86400000);
+    }
+    /** 项目任务、版本列表有时是对象，有时按需求再套一层数组。 */
+    collectRecords(value) {
+        if (!value || typeof value !== 'object') {
+            return [];
+        }
+        if (Array.isArray(value)) {
+            return value.flatMap(item => this.collectRecords(item));
+        }
+        const record = value;
+        if (record.id !== undefined && (record.name !== undefined || record.title !== undefined)) {
+            return [record];
+        }
+        return Object.values(record).flatMap(item => this.collectRecords(item));
+    }
+    mapTask(task) {
+        const story = this.linkedId(task?.story);
+        const project = this.linkedId(task?.project);
+        return {
+            id: parseInt(task.id),
+            name: task.name,
+            status: task.status,
+            pri: parseInt(task.pri) || 0,
+            deadline: task.deadline,
+            desc: task.desc || '',
+            story: story || undefined,
+            product: task.product || undefined,
+            project: project || undefined,
+            assignedTo: task.assignedTo || undefined,
+        };
+    }
+    mapProject(project) {
+        return {
+            id: parseInt(project.id),
+            name: String(project.name ?? ''),
+            code: project.code || '',
+            status: project.status || '',
+            begin: project.begin || undefined,
+            end: project.end || undefined,
+            desc: project.desc || '',
+            type: project.type || undefined,
+        };
+    }
+    projectPairs(projects) {
+        if (!projects || typeof projects !== 'object') {
+            return [];
+        }
+        const entries = Array.isArray(projects)
+            ? projects.map((name, index) => [String(index), name])
+            : Object.entries(projects);
+        return entries.map(([id, value]) => {
+            if (value && typeof value === 'object') {
+                return this.mapProject({ ...value, id: value.id || id });
+            }
+            return this.mapProject({ id, name: value });
+        }).filter(project => project.id > 0 && project.name);
+    }
+    async getProjects() {
+        try {
+            const data = await this.request('/project-all.json');
+            const projects = this.collectRecords(data.projectStats)
+                .map(item => this.mapProject(item))
+                .filter(project => project.id > 0 && project.name);
+            if (projects.length > 0) {
+                return projects;
+            }
+        }
+        catch (error) {
+            console.error('获取项目统计失败，改用项目索引:', error);
+        }
+        const data = await this.request('/project-index.json');
+        return this.projectPairs(data.projects);
+    }
+    async getProject(projectId) {
+        const data = await this.request(`/project-view-${projectId}.json`);
+        return this.mapProject(data.project || data);
+    }
+    async createProject(input) {
+        const products = (input.products || []).filter(id => id > 0);
+        if (products.length === 0) {
+            throw new Error('创建项目需要关联至少一个产品');
+        }
+        if (input.end <= input.begin) {
+            throw new Error('项目结束日期必须晚于开始日期');
+        }
+        const fields = {
+            name: input.name,
+            code: input.code,
+            begin: input.begin,
+            end: input.end,
+            days: input.days && input.days > 0 ? input.days : this.daySpan(input.begin, input.end),
+            team: input.team || input.name,
+            type: input.type || 'sprint',
+            acl: input.acl || 'open',
+            desc: input.desc || '',
+        };
+        products.forEach((productId, index) => {
+            fields[`products[${index}]`] = productId;
+        });
+        const data = await this.postRequest('/project-create.json', fields);
+        let projectId = this.locateId(data, /project-(?:create|view)-(\d+)/);
+        if (!projectId) {
+            const found = (await this.getProjects()).find(project => project.code === input.code);
+            projectId = found?.id ?? 0;
+        }
+        if (!projectId) {
+            throw new Error('项目已提交，但没有拿到编号');
+        }
+        return this.getProject(projectId);
+    }
+    async deleteProject(projectId) {
+        await this.request(`/project-delete-${projectId}-yes.json`);
+    }
+    async getProjectTasks(projectId) {
+        const data = await this.request(`/project-task-${projectId}-all-0-id_desc.json`);
+        return this.collectRecords(data.tasks).map(task => this.mapTask(task));
+    }
+    async createTask(input) {
+        const storyId = input.story || 0;
+        const fields = {
+            name: input.name,
+            type: input.type || 'devel',
+            pri: input.pri || 3,
+            estimate: input.estimate ?? 0,
+            desc: input.desc || '',
+            estStarted: input.estStarted || this.today(),
+            story: storyId,
+            // 模型按数组遍历指派人。缺这个字段时一条任务都不会建。
+            'assignedTo[]': input.assignedTo || '',
+        };
+        if (input.deadline) {
+            fields.deadline = input.deadline;
+        }
+        const data = await this.postRequest(`/task-create-${input.project}-${storyId}.json`, fields);
+        let taskId = this.locateId(data, /task-view-(\d+)/);
+        if (!taskId) {
+            const found = (await this.getProjectTasks(input.project))
+                .filter(task => task.name === input.name)
+                .sort((a, b) => b.id - a.id)[0];
+            taskId = found?.id ?? 0;
+        }
+        if (!taskId) {
+            throw new Error('任务已提交，但没有拿到编号');
+        }
+        return this.getTaskDetail(taskId);
+    }
+    async startTask(taskId, options = {}) {
+        const current = (await this.request(`/task-view-${taskId}.json`)).task;
+        const currentLeft = Number(current.left || 0);
+        const estimate = Number(current.estimate || 0);
+        // 剩余为 0 时，11.3 会直接把任务完成并指回创建人。
+        const left = options.left ?? (currentLeft > 0 ? currentLeft : (estimate > 0 ? estimate : 1));
+        await this.postRequest(`/task-start-${taskId}.json`, {
+            consumed: options.consumed ?? Number(current.consumed || 0),
+            left,
+            realStarted: this.today(),
+        });
+        return this.getTaskDetail(taskId);
+    }
+    async closeTask(taskId, comment = '') {
+        await this.postRequest(`/task-close-${taskId}.json`, {
+            closedReason: 'done',
+            comment,
+        });
+        return this.getTaskDetail(taskId);
+    }
+    async assignTask(taskId, assignedTo, options = {}) {
+        const current = (await this.request(`/task-view-${taskId}.json`)).task;
+        const projectId = this.linkedId(current.project);
+        if (!projectId) {
+            throw new Error(`任务 ${taskId} 没有项目，不能指派`);
+        }
+        const currentLeft = Number(current.left || 0);
+        await this.postRequest(`/task-assignTo-${projectId}-${taskId}.json`, {
+            assignedTo,
+            left: options.left ?? (currentLeft > 0 ? currentLeft : 1),
+            comment: options.comment || '',
+        });
+        return this.getTaskDetail(taskId);
+    }
+    async deleteTask(taskId) {
+        const current = (await this.request(`/task-view-${taskId}.json`)).task;
+        const projectId = this.linkedId(current.project);
+        if (!projectId) {
+            throw new Error(`任务 ${taskId} 没有项目，不能删除`);
+        }
+        await this.request(`/task-delete-${projectId}-${taskId}-yes.json`);
+    }
+    async createBug(input) {
+        const data = await this.postRequest(`/bug-create-${input.product}-0-0.json`, {
+            product: input.product,
+            title: input.title,
+            openedBuild: input.openedBuild || 'trunk',
+            severity: input.severity || 3,
+            pri: input.pri || 3,
+            type: input.type || 'codeerror',
+            steps: input.steps || '',
+            story: input.story || 0,
+            assignedTo: input.assignedTo || '',
+        });
+        let bugId = this.locateId(data, /bug-view-(\d+)/);
+        if (!bugId) {
+            const found = (await this.getProductBugs(input.product, 'all'))
+                .filter(bug => bug.title === input.title)
+                .sort((a, b) => b.id - a.id)[0];
+            bugId = found?.id ?? 0;
+        }
+        if (!bugId) {
+            throw new Error('Bug 已提交，但没有拿到编号');
+        }
+        return this.getBugDetail(bugId);
+    }
+    async closeBug(bugId, comment = '') {
+        await this.postRequest(`/bug-close-${bugId}.json`, { comment });
+        return this.getBugDetail(bugId);
+    }
+    async activateBug(bugId, options = {}) {
+        await this.postRequest(`/bug-activate-${bugId}.json`, {
+            assignedTo: options.assignedTo,
+            comment: options.comment || '',
+        });
+        return this.getBugDetail(bugId);
+    }
+    async assignBug(bugId, assignedTo, comment = '') {
+        await this.postRequest(`/bug-assignTo-${bugId}.json`, { assignedTo, comment });
+        return this.getBugDetail(bugId);
+    }
+    async deleteBug(bugId) {
+        await this.request(`/bug-delete-${bugId}-yes.json`);
+    }
+    async createStory(input) {
+        const fields = {
+            product: input.product,
+            title: input.title,
+            spec: input.spec || '',
+            verify: input.verify || '',
+            pri: input.pri || 3,
+            estimate: input.estimate || 0,
+            assignedTo: input.assignedTo || '',
+            source: input.source || '',
+        };
+        if (input.needNotReview !== false) {
+            fields.needNotReview = 1;
+        }
+        const data = await this.postRequest(`/story-create-${input.product}.json`, fields);
+        let storyId = this.locateId(data, /story-view-(\d+)/);
+        if (!storyId) {
+            const found = (await this.getProductStories(input.product, 'all'))
+                .filter(story => story.title === input.title)
+                .sort((a, b) => b.id - a.id)[0];
+            storyId = found?.id ?? 0;
+        }
+        if (!storyId) {
+            throw new Error('需求已提交，但没有拿到编号');
+        }
+        return this.getStoryDetail(storyId);
+    }
+    async changeStory(storyId, input) {
+        const current = (await this.request(`/story-view-${storyId}.json`)).story;
+        await this.postRequest(`/story-change-${storyId}.json`, {
+            title: input.title || current.title,
+            spec: input.spec ?? current.spec ?? '',
+            verify: input.verify ?? current.verify ?? '',
+            assignedTo: input.assignedTo ?? current.assignedTo ?? '',
+            comment: input.comment || '',
+        });
+        return this.getStoryDetail(storyId);
+    }
+    async closeStory(storyId, closedReason, comment = '') {
+        await this.postRequest(`/story-close-${storyId}.json`, { closedReason, comment });
+        return this.getStoryDetail(storyId);
+    }
+    async activateStory(storyId, options = {}) {
+        const current = (await this.request(`/story-view-${storyId}.json`)).story;
+        await this.postRequest(`/story-activate-${storyId}.json`, {
+            assignedTo: options.assignedTo || current.assignedTo || '',
+            status: 'active',
+            comment: options.comment || '',
+        });
+        return this.getStoryDetail(storyId);
+    }
+    async deleteStory(storyId) {
+        await this.request(`/story-delete-${storyId}-yes.json`);
+    }
+    async getProjectBuilds(projectId) {
+        const data = await this.request(`/project-build-${projectId}.json`);
+        // 11.3 放在 projectBuilds 里，按产品再套一层数组。
+        return this.collectRecords(data.projectBuilds || data.builds)
+            .filter(build => String(build.deleted ?? '0') !== '1')
+            .map(build => ({
+            id: parseInt(build.id),
+            name: build.name,
+            project: this.linkedId(build.project) || projectId,
+            product: this.linkedId(build.product) || undefined,
+            builder: build.builder || undefined,
+            date: build.date || undefined,
+        }));
+    }
+    async createBuild(input) {
+        const data = await this.postRequest(`/build-create-${input.project}.json`, {
+            product: input.product,
+            name: input.name,
+            builder: input.builder || this.config.username,
+            date: input.date || this.today(),
+            desc: input.desc || '',
+        });
+        let buildId = this.locateId(data, /build-view-(\d+)/);
+        if (!buildId) {
+            const found = (await this.getProjectBuilds(input.project))
+                .filter(build => build.name === input.name)
+                .sort((a, b) => b.id - a.id)[0];
+            buildId = found?.id ?? 0;
+        }
+        if (!buildId) {
+            throw new Error('版本已提交，但没有拿到编号');
+        }
+        const builds = await this.getProjectBuilds(input.project);
+        const build = builds.find(item => item.id === buildId);
+        return build ?? { id: buildId, name: input.name, project: input.project, product: input.product };
+    }
+    async deleteBuild(buildId) {
+        await this.request(`/build-delete-${buildId}-yes.json`);
+    }
+    async createTestTask(input) {
+        await this.postRequest(`/testtask-create-${input.product}-${input.project}.json`, {
+            product: input.product,
+            project: input.project,
+            build: input.build,
+            name: input.name,
+            begin: input.begin,
+            end: input.end,
+            owner: input.owner || this.config.username,
+            desc: input.desc || '',
+        });
+        const found = (await this.getTestTasks(input.product))
+            .filter(task => task.name === input.name)
+            .sort((a, b) => b.id - a.id)[0];
+        if (!found) {
+            throw new Error('测试单已提交，但没有拿到编号');
+        }
+        return found;
+    }
+    async linkTestCase(taskId, caseId, version) {
+        let caseVersion = version;
+        if (!caseVersion) {
+            const detail = await this.request(`/testcase-view-${caseId}.json`);
+            caseVersion = parseInt(detail.case?.version, 10) || 1;
+        }
+        await this.postRequest(`/testtask-linkCase-${taskId}.json`, {
+            'cases[]': caseId,
+            [`versions[${caseId}]`]: caseVersion,
+        });
+    }
+    async deleteTestTask(taskId) {
+        await this.request(`/testtask-delete-${taskId}-yes.json`);
+    }
+    async deleteTestCase(caseId) {
+        await this.request(`/testcase-delete-${caseId}-yes.json`);
     }
 }

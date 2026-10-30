@@ -2,13 +2,22 @@
  * 禅道旧版API (11.x版本)
  * 使用Session认证方式
  */
-import { Bug, BugStatus, Task, Story, StoryStatus, TestCase, TestCaseStatus, TestResult, TestTask, CreateTestCaseRequest, TestRunRequest, Product, TaskUpdate, BugResolution } from './types.js';
+import { Bug, BugStatus, Task, Story, StoryStatus, TestCase, TestCaseStatus, TestResult, TestTask, CreateTestCaseRequest, TestRunRequest, Product, TaskUpdate, BugResolution, Project, CreateProjectRequest, CreateTaskRequest, CreateBugRequest, CreateStoryRequest, ChangeStoryRequest, CreateBuildRequest, Build, CreateTestTaskRequest } from './types.js';
 import { ZentaoConfig } from './config.js';
 export declare class ZentaoLegacyAPI {
     private config;
     private client;
     private sessionId;
     constructor(config: ZentaoConfig);
+    /**
+     * 禅道 11.3 的 Content-Type 是 text/html，响应体仍是 JSON。
+     * axios 通常会解析，这里再兜一层，避免拿到字符串时读不到 status。
+     */
+    private normalizeBody;
+    /**
+     * 禅道 11.x 的 data 有时是 JSON 字符串，有时已经是对象。
+     */
+    private parsePayload;
     /**
      * 获取SessionID
      */
@@ -26,9 +35,12 @@ export declare class ZentaoLegacyAPI {
      */
     private forceReLogin;
     /**
-     * 检测响应是否为会话过期（重定向到登录页面）
+     * 写操作和确认删除经常返回 HTML，而不是 JSON。
+     * alert 是失败，confirm 表示还没执行，location 才是已经跳走。
      */
-    private isSessionExpired;
+    /** 302 的 Location 就是成功后的去向。跳到登录页才是会话失效。 */
+    private redirectOutcome;
+    private htmlOutcome;
     /**
      * 发起请求（带自动重试）
      */
@@ -38,7 +50,30 @@ export declare class ZentaoLegacyAPI {
      */
     private postRequest;
     /**
-     * 获取产品列表
+     * 禅道写操作有三种成功返回：status/data、result/locate，以及 js::locate 的 HTML。
+     * 校验失败是 alert()，不能把带 script 的页面都当成掉线。
+     */
+    private postOutcome;
+    private alertMessage;
+    private today;
+    private dateOnly;
+    /**
+     * 用例步骤在详情里是对象列表，对外保持一段文本。
+     */
+    private stepsText;
+    /**
+     * 用分页里的 pageTotal 判断还有没有下一页。
+     * pageTotal 缺失时再退回 recTotal / recPerPage。
+     */
+    private hasNextPage;
+    /**
+     * 禅道模块树有时是 {id: name}，只有根模块时会变成 ["/"]。
+     * 根节点不是业务模块，不返回。
+     */
+    private moduleMap;
+    private linkedId;
+    /**
+     * 获取产品列表。优先用 product-all 的统计数据，里面有编号、状态和描述。
      */
     getProducts(): Promise<Product[]>;
     /**
@@ -90,6 +125,10 @@ export declare class ZentaoLegacyAPI {
      */
     getProductStories(productId: number, status?: StoryStatus, moduleId?: number): Promise<Story[]>;
     /**
+     * 获取指派给我的需求。列表接口不带描述。
+     */
+    getMyStories(): Promise<Story[]>;
+    /**
      * 获取需求详情
      */
     getStoryDetail(storyId: number): Promise<Story>;
@@ -129,10 +168,13 @@ export declare class ZentaoLegacyAPI {
         endDate?: string;
     }): Promise<Story[]>;
     /**
-     * 分词：将关键字拆分为多个词
-     * 支持中英文混合，中文按字符拆分，英文按单词拆分
+     * 分词：英文按单词，中文按二字词。
      */
     private splitKeywords;
+    /**
+     * 列表里的需求没有描述。只给缺少 spec 的条目补详情。
+     */
+    private attachSpecs;
     /**
      * 按时间范围过滤需求
      * @param stories 需求列表
@@ -210,4 +252,50 @@ export declare class ZentaoLegacyAPI {
      * 获取 Bug 关联的需求
      */
     getBugRelatedStory(bugId: number): Promise<Story | null>;
+    private locateId;
+    private daySpan;
+    /** 项目任务、版本列表有时是对象，有时按需求再套一层数组。 */
+    private collectRecords;
+    private mapTask;
+    private mapProject;
+    private projectPairs;
+    getProjects(): Promise<Project[]>;
+    getProject(projectId: number): Promise<Project>;
+    createProject(input: CreateProjectRequest): Promise<Project>;
+    deleteProject(projectId: number): Promise<void>;
+    getProjectTasks(projectId: number): Promise<Task[]>;
+    createTask(input: CreateTaskRequest): Promise<Task>;
+    startTask(taskId: number, options?: {
+        consumed?: number;
+        left?: number;
+    }): Promise<Task>;
+    closeTask(taskId: number, comment?: string): Promise<Task>;
+    assignTask(taskId: number, assignedTo: string, options?: {
+        left?: number;
+        comment?: string;
+    }): Promise<Task>;
+    deleteTask(taskId: number): Promise<void>;
+    createBug(input: CreateBugRequest): Promise<Bug>;
+    closeBug(bugId: number, comment?: string): Promise<Bug>;
+    activateBug(bugId: number, options?: {
+        assignedTo?: string;
+        comment?: string;
+    }): Promise<Bug>;
+    assignBug(bugId: number, assignedTo: string, comment?: string): Promise<Bug>;
+    deleteBug(bugId: number): Promise<void>;
+    createStory(input: CreateStoryRequest): Promise<Story>;
+    changeStory(storyId: number, input: ChangeStoryRequest): Promise<Story>;
+    closeStory(storyId: number, closedReason: string, comment?: string): Promise<Story>;
+    activateStory(storyId: number, options?: {
+        assignedTo?: string;
+        comment?: string;
+    }): Promise<Story>;
+    deleteStory(storyId: number): Promise<void>;
+    getProjectBuilds(projectId: number): Promise<Build[]>;
+    createBuild(input: CreateBuildRequest): Promise<Build>;
+    deleteBuild(buildId: number): Promise<void>;
+    createTestTask(input: CreateTestTaskRequest): Promise<TestTask>;
+    linkTestCase(taskId: number, caseId: number, version?: number): Promise<void>;
+    deleteTestTask(taskId: number): Promise<void>;
+    deleteTestCase(caseId: number): Promise<void>;
 }
