@@ -7,7 +7,6 @@
 - ✅ **纯 Legacy API** - 只支持禅道 11.x 版本的 Session API
 - ✅ **命令行和 MCP** - 全局安装后用 `zentao` 查询和修改；同一个程序也是 MCP 服务
 - ✅ **读写** - 产品、项目、需求、任务、Bug、用例、版本、测试单
-- ✅ **AI 编程优化** - 提供完整开发上下文、格式化输出、智能摘要等功能
 - ✅ **开箱即用** - `zentao config set` 写配置，`zentao setup` 安装 skill 并登记 MCP
 
 ## 📋 系统要求
@@ -275,31 +274,6 @@ grok plugin install /path/to/mcp-zentao-11-3/plugin --trust
 查看我的Bug统计
 ```
 
-### AI 编程辅助
-
-```
-获取需求2508的完整开发上下文（包含关联的Bug和测试用例）
-生成需求2508的Markdown摘要
-生成Bug 20692的Markdown摘要
-格式化任务123为Markdown
-```
-
-### 智能分析
-
-```
-分析需求2508的复杂度
-分析Bug 20692的优先级
-分析任务123的工作量
-```
-
-### 代码生成提示
-
-```
-根据需求2508生成代码框架提示
-根据Bug 20692生成测试用例提示
-生成需求2508的代码审查检查清单
-```
-
 ### 数据导出
 
 ```
@@ -400,25 +374,6 @@ grok plugin install /path/to/mcp-zentao-11-3/plugin --trust
 
 - `getMyTaskStatistics` - 获取我的任务统计信息
 - `getMyBugStatistics` - 获取我的 Bug 统计信息
-
-### AI 编程辅助功能
-
-- `getDevelopmentContext` - 获取需求/Bug 的完整开发上下文（包含关联信息）
-- `generateStorySummary` - 生成需求摘要（支持 JSON/Markdown/文本格式）
-- `generateBugSummary` - 生成 Bug 摘要（支持 JSON/Markdown/文本格式）
-- `formatTaskAsMarkdown` - 将任务格式化为 Markdown
-
-### 智能分析功能
-
-- `analyzeStoryComplexity` - 分析需求复杂度（评分、工时估算、优先级建议）
-- `analyzeBugPriority` - 分析 Bug 优先级（评分、优先级建议）
-- `analyzeTaskWorkload` - 分析任务工作量（工时估算、难度评估）
-
-### 代码生成提示
-
-- `generateCodePromptFromStory` - 根据需求生成代码框架提示
-- `generateTestPromptFromBug` - 根据 Bug 生成测试用例提示
-- `generateCodeReviewChecklist` - 生成代码审查检查清单
 
 ### 数据导出
 
